@@ -28,8 +28,15 @@ type ScheduleRow = {
 
 type Rules = {
   warningDays: number;
-  clearanceHours: number;
+  defaultClearanceHours: number;
+  processClearanceRules: ProcessClearanceRule[];
   testingDays: number;
+};
+
+type ProcessClearanceRule = {
+  id: string;
+  process: string;
+  hours: number;
 };
 
 type AlertLevel = "高" | "中" | "低";
@@ -138,7 +145,10 @@ const DEMO_SCHEDULE: ScheduleRow[] = [
 
 const DEFAULT_RULES: Rules = {
   warningDays: 7,
-  clearanceHours: 4,
+  defaultClearanceHours: 4,
+  processClearanceRules: [
+    { id: "clearance-weighing", process: "称量", hours: 1 },
+  ],
   testingDays: 7,
 };
 
@@ -262,6 +272,20 @@ function formatDate(value: string, withTime = false) {
   }).format(parsed);
 }
 
+function clearanceHoursForProcess(process: string, rules: Rules) {
+  const normalized = process.trim().replace(/\s+/g, "");
+  const matched = rules.processClearanceRules.find((rule) => {
+    const ruleName = rule.process.trim().replace(/\s+/g, "");
+    return (
+      Boolean(ruleName) &&
+      (normalized === ruleName ||
+        normalized.includes(ruleName) ||
+        ruleName.includes(normalized))
+    );
+  });
+  return matched?.hours ?? rules.defaultClearanceHours;
+}
+
 function evaluate(plan: PlanRow[], schedule: ScheduleRow[], rules: Rules): Alert[] {
   const alerts: Alert[] = [];
   const sorted = [...schedule].sort(
@@ -332,7 +356,9 @@ function evaluate(plan: PlanRow[], schedule: ScheduleRow[], rules: Rules): Alert
       const start = dateTime(next.start);
       if (!end || !start || start < end) return;
       const gapHours = (start.getTime() - end.getTime()) / 3600000;
-      if (gapHours < rules.clearanceHours) {
+      const process = row.process || next.process || "未填写工序";
+      const minimumHours = clearanceHoursForProcess(process, rules);
+      if (gapHours < minimumHours) {
         alerts.push({
           id: `clearance-${row.id}-${next.id}`,
           type: "清场间隔不足",
@@ -340,8 +366,8 @@ function evaluate(plan: PlanRow[], schedule: ScheduleRow[], rules: Rules): Alert
           batch: `${row.batch} → ${next.batch}`,
           product: `${row.product} → ${next.product}`,
           time: `${gapHours.toFixed(1)} 小时`,
-          detail: `${row.equipment}两项任务之间仅预留${gapHours.toFixed(1)}小时。`,
-          action: `至少预留${rules.clearanceHours}小时并确认清场方式`,
+          detail: `${row.equipment}的${process}工序，两项任务之间仅预留${gapHours.toFixed(1)}小时。`,
+          action: `该工序至少预留${minimumHours}小时并确认清场方式`,
         });
       }
     });
@@ -517,7 +543,26 @@ export default function Home() {
           const data = JSON.parse(saved);
           if (Array.isArray(data.plan)) setPlan(data.plan);
           if (Array.isArray(data.schedule)) setSchedule(data.schedule);
-          if (data.rules) setRules({ ...DEFAULT_RULES, ...data.rules });
+          if (data.rules) {
+            const savedRules = data.rules as Partial<Rules> & {
+              clearanceHours?: number;
+            };
+            setRules({
+              warningDays:
+                savedRules.warningDays ?? DEFAULT_RULES.warningDays,
+              testingDays:
+                savedRules.testingDays ?? DEFAULT_RULES.testingDays,
+              defaultClearanceHours:
+                savedRules.defaultClearanceHours ??
+                savedRules.clearanceHours ??
+                DEFAULT_RULES.defaultClearanceHours,
+              processClearanceRules: Array.isArray(
+                savedRules.processClearanceRules
+              )
+                ? savedRules.processClearanceRules
+                : DEFAULT_RULES.processClearanceRules,
+            });
+          }
         }
       } catch {
         setNotice("本地缓存读取失败，已使用示例数据");
@@ -656,6 +701,37 @@ export default function Home() {
     setSchedule(DEMO_SCHEDULE);
     setRules(DEFAULT_RULES);
     setNotice("已恢复示例数据");
+  }
+
+  function updateProcessClearanceRule(
+    id: string,
+    patch: Partial<Pick<ProcessClearanceRule, "process" | "hours">>
+  ) {
+    setRules({
+      ...rules,
+      processClearanceRules: rules.processClearanceRules.map((rule) =>
+        rule.id === id ? { ...rule, ...patch } : rule
+      ),
+    });
+  }
+
+  function addProcessClearanceRule() {
+    setRules({
+      ...rules,
+      processClearanceRules: [
+        ...rules.processClearanceRules,
+        { id: uid("clearance"), process: "", hours: rules.defaultClearanceHours },
+      ],
+    });
+  }
+
+  function removeProcessClearanceRule(id: string) {
+    setRules({
+      ...rules,
+      processClearanceRules: rules.processClearanceRules.filter(
+        (rule) => rule.id !== id
+      ),
+    });
   }
 
   const navCount: Partial<Record<Tab, number>> = {
@@ -808,8 +884,8 @@ export default function Home() {
                     <dd>{rules.testingDays} 天</dd>
                   </div>
                   <div>
-                    <dt>最小清场间隔</dt>
-                    <dd>{rules.clearanceHours} 小时</dd>
+                    <dt>清场间隔</dt>
+                    <dd>按工序设置</dd>
                   </div>
                 </dl>
               </article>
@@ -971,9 +1047,63 @@ export default function Home() {
                 <input type="number" min="0" value={rules.warningDays} onChange={(event) => setRules({ ...rules, warningDays: Number(event.target.value) })} />
               </label>
               <label>
-                <span><b>最小清场间隔（小时）</b><small>同一设备相邻两个任务之间的最短间隔</small></span>
-                <input type="number" min="0" step="0.5" value={rules.clearanceHours} onChange={(event) => setRules({ ...rules, clearanceHours: Number(event.target.value) })} />
+                <span><b>其他工序默认清场间隔（小时）</b><small>工序未单独配置时使用此值</small></span>
+                <input type="number" min="0" step="0.5" value={rules.defaultClearanceHours} onChange={(event) => setRules({ ...rules, defaultClearanceHours: Number(event.target.value) })} />
               </label>
+              <div className="process-rules">
+                <div className="process-rules-heading">
+                  <span>
+                    <b>按工序设置清场间隔</b>
+                    <small>优先按排产明细中的“工序”字段匹配</small>
+                  </span>
+                  <button className="button secondary" onClick={addProcessClearanceRule}>
+                    新增工序
+                  </button>
+                </div>
+                <div className="process-rules-list">
+                  {rules.processClearanceRules.map((rule) => (
+                    <div className="process-rule-row" key={rule.id}>
+                      <input
+                        className="process-name-input"
+                        value={rule.process}
+                        placeholder="例如：称量"
+                        aria-label="工序名称"
+                        onChange={(event) =>
+                          updateProcessClearanceRule(rule.id, {
+                            process: event.target.value,
+                          })
+                        }
+                      />
+                      <span>最小间隔</span>
+                      <input
+                        className="process-hours-input"
+                        type="number"
+                        min="0"
+                        step="0.5"
+                        value={rule.hours}
+                        aria-label={`${rule.process || "该工序"}最小清场间隔`}
+                        onChange={(event) =>
+                          updateProcessClearanceRule(rule.id, {
+                            hours: Number(event.target.value),
+                          })
+                        }
+                      />
+                      <span>小时</span>
+                      <button
+                        className="delete-button"
+                        onClick={() => removeProcessClearanceRule(rule.id)}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  ))}
+                  {!rules.processClearanceRules.length && (
+                    <p className="process-rules-empty">
+                      暂无单独配置，所有工序使用默认间隔
+                    </p>
+                  )}
+                </div>
+              </div>
               <label>
                 <span><b>默认检验周期（天）</b><small>未填写要求生产完成日期时，从许可发货日期倒推</small></span>
                 <input type="number" min="0" value={rules.testingDays} onChange={(event) => setRules({ ...rules, testingDays: Number(event.target.value) })} />
@@ -985,6 +1115,7 @@ export default function Home() {
               <ul>
                 <li><b>批次匹配：</b>优先按批号前 8 位识别同一生产批。</li>
                 <li><b>连写批号：</b>如“32607094-95”，导入后拆成两条记录。</li>
+                <li><b>清场间隔：</b>优先按工序匹配专用值；未配置工序使用默认值。</li>
                 <li><b>交期依据：</b>优先使用生产检验跟踪表中的许可发货日期。</li>
                 <li><b>新增数据：</b>上传或删除记录后，全部异常立即重新计算。</li>
               </ul>
