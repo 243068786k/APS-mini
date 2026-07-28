@@ -39,6 +39,17 @@ type ProcessClearanceRule = {
   hours: number;
 };
 
+type ImportState = {
+  plan: boolean;
+  schedule: boolean;
+};
+
+type MergeResult<T> = {
+  rows: T[];
+  added: number;
+  updated: number;
+};
+
 type AlertLevel = "高" | "中" | "低";
 type Alert = {
   id: string;
@@ -229,6 +240,10 @@ function batchKey(batch: string) {
   const normalized = String(batch ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   const digits = normalized.match(/\d{8}/)?.[0];
   return digits ?? normalized;
+}
+
+function normalizedText(value: string) {
+  return String(value ?? "").trim().replace(/\s+/g, "").toUpperCase();
 }
 
 function dateTime(value: string) {
@@ -480,8 +495,7 @@ function parsePlanRows(rows: Record<string, unknown>[], rules: Rules) {
         ),
         permittedShipDate,
         requiredFinishDate,
-        status:
-          String(getValue(row, HEADER_ALIASES.plan.status) ?? "").trim() || "待生产",
+        status: String(getValue(row, HEADER_ALIASES.plan.status) ?? "").trim(),
       });
     });
   });
@@ -511,13 +525,147 @@ function parseScheduleRows(rows: Record<string, unknown>[]) {
         ).trim(),
         start: asDate(getValue(row, HEADER_ALIASES.schedule.start), true),
         end: asDate(getValue(row, HEADER_ALIASES.schedule.end), true),
-        status:
-          String(getValue(row, HEADER_ALIASES.schedule.status) ?? "").trim() ||
-          "已排产",
+        status: String(
+          getValue(row, HEADER_ALIASES.schedule.status) ?? ""
+        ).trim(),
       });
     });
   });
   return result;
+}
+
+function planMergeKey(row: PlanRow) {
+  return batchKey(row.batch);
+}
+
+function scheduleBaseKey(row: ScheduleRow) {
+  return `${batchKey(row.batch)}|${normalizedText(row.process)}`;
+}
+
+function scheduleMergeKey(row: ScheduleRow) {
+  return `${scheduleBaseKey(row)}|${normalizedText(row.equipment)}`;
+}
+
+function mergePlanRecord(current: PlanRow, incoming: PlanRow): PlanRow {
+  return {
+    id: current.id,
+    product: incoming.product || current.product,
+    specification: incoming.specification || current.specification,
+    batch: incoming.batch || current.batch,
+    originalShipDate: incoming.originalShipDate || current.originalShipDate,
+    permittedShipDate: incoming.permittedShipDate || current.permittedShipDate,
+    requiredFinishDate:
+      incoming.requiredFinishDate || current.requiredFinishDate,
+    status: incoming.status || current.status || "待生产",
+  };
+}
+
+function mergeScheduleRecord(
+  current: ScheduleRow,
+  incoming: ScheduleRow
+): ScheduleRow {
+  return {
+    id: current.id,
+    workshop: incoming.workshop || current.workshop,
+    equipment: incoming.equipment || current.equipment,
+    product: incoming.product || current.product,
+    batch: incoming.batch || current.batch,
+    process: incoming.process || current.process,
+    start: incoming.start || current.start,
+    end: incoming.end || current.end,
+    status: incoming.status || current.status || "已排产",
+  };
+}
+
+function mergePlanRows(
+  current: PlanRow[],
+  incoming: PlanRow[]
+): MergeResult<PlanRow> {
+  const rows = current.map((row) => ({ ...row }));
+  const indexByKey = new Map(
+    rows.map((row, index) => [planMergeKey(row), index])
+  );
+  let added = 0;
+  let updated = 0;
+
+  incoming.forEach((row) => {
+    const key = planMergeKey(row);
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex === undefined) {
+      rows.push({ ...row, status: row.status || "待生产" });
+      indexByKey.set(key, rows.length - 1);
+      added += 1;
+      return;
+    }
+    rows[existingIndex] = mergePlanRecord(rows[existingIndex], row);
+    updated += 1;
+  });
+
+  return { rows, added, updated };
+}
+
+function mergeScheduleRows(
+  current: ScheduleRow[],
+  incoming: ScheduleRow[]
+): MergeResult<ScheduleRow> {
+  const rows = current.map((row) => ({ ...row }));
+  const exactIndex = new Map(
+    rows.map((row, index) => [scheduleMergeKey(row), index])
+  );
+  const currentBaseIndexes = new Map<string, number[]>();
+  rows.forEach((row, index) => {
+    const key = scheduleBaseKey(row);
+    currentBaseIndexes.set(key, [
+      ...(currentBaseIndexes.get(key) ?? []),
+      index,
+    ]);
+  });
+  const incomingBaseCounts = new Map<string, number>();
+  incoming.forEach((row) => {
+    const key = scheduleBaseKey(row);
+    incomingBaseCounts.set(key, (incomingBaseCounts.get(key) ?? 0) + 1);
+  });
+
+  let added = 0;
+  let updated = 0;
+  incoming.forEach((row) => {
+    const exactKey = scheduleMergeKey(row);
+    const baseKey = scheduleBaseKey(row);
+    let existingIndex = exactIndex.get(exactKey);
+
+    if (
+      existingIndex === undefined &&
+      incomingBaseCounts.get(baseKey) === 1 &&
+      currentBaseIndexes.get(baseKey)?.length === 1
+    ) {
+      existingIndex = currentBaseIndexes.get(baseKey)?.[0];
+    }
+
+    if (existingIndex === undefined) {
+      rows.push({ ...row, status: row.status || "已排产" });
+      const newIndex = rows.length - 1;
+      exactIndex.set(exactKey, newIndex);
+      currentBaseIndexes.set(baseKey, [
+        ...(currentBaseIndexes.get(baseKey) ?? []),
+        newIndex,
+      ]);
+      added += 1;
+      return;
+    }
+
+    rows[existingIndex] = mergeScheduleRecord(rows[existingIndex], row);
+    exactIndex.set(scheduleMergeKey(rows[existingIndex]), existingIndex);
+    updated += 1;
+  });
+
+  return { rows, added, updated };
+}
+
+function isUnchangedDemo<T extends { id: string }>(rows: T[], demo: T[]) {
+  return (
+    rows.length === demo.length &&
+    rows.every((row, index) => row.id === demo[index]?.id)
+  );
 }
 
 function StatusPill({ level }: { level: AlertLevel }) {
@@ -529,10 +677,16 @@ export default function Home() {
   const [plan, setPlan] = useState<PlanRow[]>(DEMO_PLAN);
   const [schedule, setSchedule] = useState<ScheduleRow[]>(DEMO_SCHEDULE);
   const [rules, setRules] = useState<Rules>(DEFAULT_RULES);
+  const [importState, setImportState] = useState<ImportState>({
+    plan: false,
+    schedule: false,
+  });
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
   const [level, setLevel] = useState<"全部" | AlertLevel>("全部");
-  const [notice, setNotice] = useState("当前为示例数据，可直接上传实际表格替换");
+  const [notice, setNotice] = useState(
+    "首次上传会替换对应示例数据；后续上传将保留历史记录并自动合并重复信息"
+  );
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -543,6 +697,16 @@ export default function Home() {
           const data = JSON.parse(saved);
           if (Array.isArray(data.plan)) setPlan(data.plan);
           if (Array.isArray(data.schedule)) setSchedule(data.schedule);
+          setImportState({
+            plan:
+              data.importState?.plan ??
+              (Array.isArray(data.plan) &&
+                !isUnchangedDemo(data.plan, DEMO_PLAN)),
+            schedule:
+              data.importState?.schedule ??
+              (Array.isArray(data.schedule) &&
+                !isUnchangedDemo(data.schedule, DEMO_SCHEDULE)),
+          });
           if (data.rules) {
             const savedRules = data.rules as Partial<Rules> & {
               clearanceHours?: number;
@@ -575,9 +739,9 @@ export default function Home() {
     if (!loaded) return;
     localStorage.setItem(
       "aps-mini-data",
-      JSON.stringify({ plan, schedule, rules })
+      JSON.stringify({ plan, schedule, rules, importState })
     );
-  }, [loaded, plan, schedule, rules]);
+  }, [loaded, plan, schedule, rules, importState]);
 
   const alerts = useMemo(() => evaluate(plan, schedule, rules), [plan, schedule, rules]);
   const filteredAlerts = useMemo(
@@ -628,10 +792,50 @@ export default function Home() {
         setNotice("未识别到“生产计划”或“排产明细”工作表，请先下载模板");
         return;
       }
-      if (nextPlan.length) setPlan(nextPlan);
-      if (nextSchedule.length) setSchedule(nextSchedule);
+      const messages: string[] = [];
+      const nextImportState = { ...importState };
+
+      if (nextPlan.length) {
+        if (importState.plan) {
+          const merged = mergePlanRows(plan, nextPlan);
+          setPlan(merged.rows);
+          messages.push(
+            `生产计划新增${merged.added}条、合并更新${merged.updated}条`
+          );
+        } else {
+          setPlan(
+            nextPlan.map((row) => ({
+              ...row,
+              status: row.status || "待生产",
+            }))
+          );
+          messages.push(`生产计划首次导入${nextPlan.length}条`);
+        }
+        nextImportState.plan = true;
+      }
+
+      if (nextSchedule.length) {
+        if (importState.schedule) {
+          const merged = mergeScheduleRows(schedule, nextSchedule);
+          setSchedule(merged.rows);
+          messages.push(
+            `排产记录新增${merged.added}条、合并更新${merged.updated}条`
+          );
+        } else {
+          setSchedule(
+            nextSchedule.map((row) => ({
+              ...row,
+              status: row.status || "已排产",
+            }))
+          );
+          messages.push(`排产记录首次导入${nextSchedule.length}条`);
+        }
+        nextImportState.schedule = true;
+      }
+
+      setImportState(nextImportState);
       setNotice(
-        `已导入${nextPlan.length}条生产计划、${nextSchedule.length}条排产记录，并完成异常判断`
+        `${messages.join("；")}，有效历史数据已保留并重新完成异常判断`
       );
     } catch {
       setNotice("表格读取失败，请确认文件为有效的 Excel 或 CSV 文件");
@@ -700,6 +904,7 @@ export default function Home() {
     setPlan(DEMO_PLAN);
     setSchedule(DEMO_SCHEDULE);
     setRules(DEFAULT_RULES);
+    setImportState({ plan: false, schedule: false });
     setNotice("已恢复示例数据");
   }
 
@@ -794,7 +999,7 @@ export default function Home() {
               下载导入模板
             </button>
             <button className="button primary" onClick={() => fileRef.current?.click()}>
-              上传 Excel 并审核
+              上传 Excel 并合并审核
             </button>
           </div>
         </header>
