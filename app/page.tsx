@@ -684,6 +684,7 @@ export default function Home() {
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
   const [level, setLevel] = useState<"全部" | AlertLevel>("全部");
+  const [alertType, setAlertType] = useState("全部类型");
   const [notice, setNotice] = useState(
     "首次上传会替换对应示例数据；后续上传将保留历史记录并自动合并重复信息"
   );
@@ -744,14 +745,28 @@ export default function Home() {
   }, [loaded, plan, schedule, rules, importState]);
 
   const alerts = useMemo(() => evaluate(plan, schedule, rules), [plan, schedule, rules]);
+  const alertTypes = useMemo(
+    () =>
+      Array.from(new Set(alerts.map((item) => item.type))).map((type) => ({
+        type,
+        count: alerts.filter((item) => item.type === type).length,
+      })),
+    [alerts]
+  );
   const filteredAlerts = useMemo(
     () =>
       alerts.filter((item) => {
         const matchesLevel = level === "全部" || item.level === level;
+        const matchesType =
+          alertType === "全部类型" || item.type === alertType;
         const haystack = `${item.type}${item.batch}${item.product}${item.detail}`;
-        return matchesLevel && haystack.toLowerCase().includes(query.toLowerCase());
+        return (
+          matchesLevel &&
+          matchesType &&
+          haystack.toLowerCase().includes(query.toLowerCase())
+        );
       }),
-    [alerts, level, query]
+    [alerts, level, alertType, query]
   );
   const summary = useMemo(
     () => ({
@@ -885,7 +900,7 @@ export default function Home() {
     XLSX.utils.book_append_sheet(
       workbook,
       XLSX.utils.json_to_sheet(
-        alerts.map((item) => ({
+        filteredAlerts.map((item) => ({
           风险等级: item.level,
           异常类型: item.type,
           产品: item.product,
@@ -897,7 +912,7 @@ export default function Home() {
       ),
       "异常清单"
     );
-    XLSX.writeFile(workbook, "APS-mini异常清单.xlsx");
+    XLSX.writeFile(workbook, "APS-mini当前筛选异常.xlsx");
   }
 
   function resetDemo() {
@@ -1119,20 +1134,47 @@ export default function Home() {
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder="搜索产品、批号或异常"
+                  aria-label="搜索异常"
                 />
+                <select
+                  className="type-filter"
+                  value={alertType}
+                  onChange={(event) => setAlertType(event.target.value)}
+                  aria-label="按异常类型筛选"
+                >
+                  <option value="全部类型">全部异常类型（{alerts.length}）</option>
+                  {alertTypes.map((item) => (
+                    <option value={item.type} key={item.type}>
+                      {item.type}（{item.count}）
+                    </option>
+                  ))}
+                </select>
                 <select
                   value={level}
                   onChange={(event) =>
                     setLevel(event.target.value as "全部" | AlertLevel)
                   }
+                  aria-label="按风险等级筛选"
                 >
-                  <option>全部</option>
+                  <option value="全部">全部风险</option>
                   <option>高</option>
                   <option>中</option>
                   <option>低</option>
                 </select>
+                {(query || level !== "全部" || alertType !== "全部类型") && (
+                  <button
+                    className="button secondary"
+                    onClick={() => {
+                      setQuery("");
+                      setLevel("全部");
+                      setAlertType("全部类型");
+                    }}
+                  >
+                    清除筛选
+                  </button>
+                )}
                 <button className="button secondary" onClick={exportAlerts}>
-                  导出异常清单
+                  导出当前筛选
                 </button>
               </div>
             </div>
