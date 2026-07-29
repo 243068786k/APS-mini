@@ -240,6 +240,11 @@ h2 {
   align-items: center;
 }
 
+.filters {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .button {
   min-height: 40px;
   padding: 0 15px;
@@ -616,6 +621,10 @@ h2 {
 .filters select {
   min-width: 90px;
   padding: 0 9px;
+}
+
+.filters .type-filter {
+  min-width: 190px;
 }
 
 .filters input:focus,
