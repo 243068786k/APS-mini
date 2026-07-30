@@ -326,7 +326,7 @@ h2 {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 14px;
 }
 
@@ -385,6 +385,10 @@ h2 {
 
 .warning-text {
   color: var(--amber);
+}
+
+.info-text {
+  color: var(--blue);
 }
 
 .panel {
@@ -507,6 +511,58 @@ h2 {
   color: var(--green);
   font-size: 10px;
   font-weight: 700;
+}
+
+.activity-tag,
+.applicability {
+  display: inline-flex;
+  width: max-content;
+  padding: 5px 9px;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.applicability-必须 {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.applicability-条件适用 {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.applicability-不适用 {
+  background: #eef0ef;
+  color: #707974;
+}
+
+.activity-guide {
+  padding: 12px 20px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfb;
+}
+
+.activity-guide span {
+  padding: 6px 9px;
+  border: 1px solid #e6ebe8;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.activity-guide b {
+  margin-right: 4px;
+  color: var(--ink);
 }
 
 .two-column,
