@@ -26,11 +26,22 @@ type ScheduleRow = {
   status: string;
 };
 
+type StandardTimeRow = {
+  id: string;
+  product: string;
+  workshop: string;
+  process: string;
+  standardHours: number;
+  tolerancePercent: number;
+  note: string;
+};
+
 type Rules = {
   warningDays: number;
   defaultClearanceHours: number;
   processClearanceRules: ProcessClearanceRule[];
   testingDays: number;
+  standardTimeTolerancePercent: number;
 };
 
 type ProcessClearanceRule = {
@@ -42,6 +53,7 @@ type ProcessClearanceRule = {
 type ImportState = {
   plan: boolean;
   schedule: boolean;
+  standardTime: boolean;
 };
 
 type MergeResult<T> = {
@@ -62,7 +74,13 @@ type Alert = {
   action: string;
 };
 
-type Tab = "overview" | "alerts" | "schedule" | "plan" | "rules";
+type Tab =
+  | "overview"
+  | "alerts"
+  | "schedule"
+  | "plan"
+  | "standardTime"
+  | "rules";
 
 const DEMO_PLAN: PlanRow[] = [
   {
@@ -154,6 +172,36 @@ const DEMO_SCHEDULE: ScheduleRow[] = [
   },
 ];
 
+const DEMO_STANDARD_TIMES: StandardTimeRow[] = [
+  {
+    id: "st1",
+    product: "YF013片",
+    workshop: "二车间",
+    process: "压片",
+    standardHours: 8,
+    tolerancePercent: 10,
+    note: "示例：每批标准工时",
+  },
+  {
+    id: "st2",
+    product: "YF029片",
+    workshop: "二车间",
+    process: "压片",
+    standardHours: 10,
+    tolerancePercent: 10,
+    note: "示例：每批标准工时",
+  },
+  {
+    id: "st3",
+    product: "YF013片",
+    workshop: "三车间",
+    process: "制粒",
+    standardHours: 10,
+    tolerancePercent: 10,
+    note: "示例：每批标准工时",
+  },
+];
+
 const DEFAULT_RULES: Rules = {
   warningDays: 7,
   defaultClearanceHours: 4,
@@ -161,6 +209,7 @@ const DEFAULT_RULES: Rules = {
     { id: "clearance-weighing", process: "称量", hours: 1 },
   ],
   testingDays: 7,
+  standardTimeTolerancePercent: 10,
 };
 
 const NAV: Array<{ id: Tab; label: string; hint: string }> = [
@@ -168,6 +217,7 @@ const NAV: Array<{ id: Tab; label: string; hint: string }> = [
   { id: "alerts", label: "异常清单", hint: "自动判断结果" },
   { id: "schedule", label: "排产明细", hint: "一批一工序一行" },
   { id: "plan", label: "生产计划", hint: "交期审核底表" },
+  { id: "standardTime", label: "标准工时", hint: "产品与车间基准" },
   { id: "rules", label: "规则参数", hint: "预警与清场设置" },
 ];
 
@@ -190,6 +240,24 @@ const HEADER_ALIASES = {
     start: ["开始时间", "计划开始时间", "开始日期"],
     end: ["结束时间", "计划结束时间", "结束日期"],
     status: ["状态", "排产状态"],
+  },
+  standardTime: {
+    product: ["产品名称", "品名", "产品"],
+    workshop: ["车间", "生产车间"],
+    process: ["工序", "生产工序"],
+    standardHours: [
+      "标准工时（小时）",
+      "标准工时(小时)",
+      "标准工时",
+      "工时",
+    ],
+    tolerancePercent: [
+      "容许偏差（%）",
+      "容许偏差(%)",
+      "容许偏差",
+      "偏差比例",
+    ],
+    note: ["备注", "说明"],
   },
 };
 
@@ -301,7 +369,12 @@ function clearanceHoursForProcess(process: string, rules: Rules) {
   return matched?.hours ?? rules.defaultClearanceHours;
 }
 
-function evaluate(plan: PlanRow[], schedule: ScheduleRow[], rules: Rules): Alert[] {
+function evaluate(
+  plan: PlanRow[],
+  schedule: ScheduleRow[],
+  rules: Rules,
+  standardTimes: StandardTimeRow[]
+): Alert[] {
   const alerts: Alert[] = [];
   const sorted = [...schedule].sort(
     (a, b) => (dateTime(a.start)?.getTime() ?? 0) - (dateTime(b.start)?.getTime() ?? 0)
@@ -404,6 +477,98 @@ function evaluate(plan: PlanRow[], schedule: ScheduleRow[], rules: Rules): Alert
       });
     }
   });
+
+  if (standardTimes.length) {
+    const workGroups = new Map<
+      string,
+      { row: ScheduleRow; hours: number }
+    >();
+    schedule.forEach((row) => {
+      const start = dateTime(row.start);
+      const end = dateTime(row.end);
+      if (!start || !end || end <= start) return;
+      const key = [
+        batchKey(row.batch),
+        normalizedText(row.product),
+        normalizedText(row.workshop),
+        normalizedText(row.process),
+      ].join("|");
+      const current = workGroups.get(key);
+      workGroups.set(key, {
+        row: current?.row ?? row,
+        hours:
+          (current?.hours ?? 0) +
+          (end.getTime() - start.getTime()) / 3600000,
+      });
+    });
+
+    workGroups.forEach(({ row, hours }) => {
+      const product = normalizedText(row.product);
+      const workshop = normalizedText(row.workshop);
+      const process = normalizedText(row.process);
+      const candidates = standardTimes.filter(
+        (standard) =>
+          normalizedText(standard.product) === product &&
+          normalizedText(standard.workshop) === workshop
+      );
+      const standard =
+        candidates.find(
+          (item) => normalizedText(item.process) === process
+        ) ?? candidates.find((item) => !normalizedText(item.process));
+
+      if (!standard) {
+        alerts.push({
+          id: `standard-missing-${row.id}`,
+          type: "未维护标准工时",
+          level: "低",
+          batch: row.batch,
+          product: row.product,
+          time: `${hours.toFixed(1)} 小时`,
+          detail: `${row.workshop}的${row.process || "未填写"}工序未找到该产品的标准工时。`,
+          action: "在“标准工时”sheet中补充产品、车间和工序基准",
+        });
+        return;
+      }
+
+      const tolerance =
+        Number.isFinite(standard.tolerancePercent) &&
+        standard.tolerancePercent >= 0
+          ? standard.tolerancePercent
+          : rules.standardTimeTolerancePercent;
+      const lower = standard.standardHours * (1 - tolerance / 100);
+      const upper = standard.standardHours * (1 + tolerance / 100);
+      const deviation =
+        ((hours - standard.standardHours) / standard.standardHours) * 100;
+
+      if (hours > upper) {
+        alerts.push({
+          id: `standard-over-${row.id}`,
+          type: "排产工时超出标准",
+          level: "中",
+          batch: row.batch,
+          product: row.product,
+          time: `${hours.toFixed(1)} / ${standard.standardHours.toFixed(1)} 小时`,
+          detail: `${row.workshop}${row.process}排产总时长较标准工时高${Math.abs(
+            deviation
+          ).toFixed(1)}%，超出±${tolerance}%容许范围。`,
+          action: "核对是否包含等待、清场或停机时间，并确认排产时长",
+        });
+      } else if (hours < lower) {
+        alerts.push({
+          id: `standard-under-${row.id}`,
+          type: "排产工时低于标准",
+          level: "中",
+          batch: row.batch,
+          product: row.product,
+          time: `${hours.toFixed(1)} / ${standard.standardHours.toFixed(1)} 小时`,
+          detail: `${row.workshop}${row.process}排产总时长较标准工时低${Math.abs(
+            deviation
+          ).toFixed(1)}%，超出±${tolerance}%容许范围。`,
+          action: "核对是否漏排时段、批量不同或标准工时需要更新",
+        });
+      }
+    });
+  }
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -529,6 +694,50 @@ function parseScheduleRows(rows: Record<string, unknown>[]) {
           getValue(row, HEADER_ALIASES.schedule.status) ?? ""
         ).trim(),
       });
+    });
+  });
+  return result;
+}
+
+function parseStandardTimeRows(rows: Record<string, unknown>[]) {
+  const result: StandardTimeRow[] = [];
+  rows.forEach((row) => {
+    const product = String(
+      getValue(row, HEADER_ALIASES.standardTime.product) ?? ""
+    ).trim();
+    const workshop = String(
+      getValue(row, HEADER_ALIASES.standardTime.workshop) ?? ""
+    ).trim();
+    const standardHours = Number(
+      getValue(row, HEADER_ALIASES.standardTime.standardHours)
+    );
+    if (
+      !product ||
+      !workshop ||
+      !Number.isFinite(standardHours) ||
+      standardHours <= 0
+    ) {
+      return;
+    }
+    const toleranceRaw = getValue(
+      row,
+      HEADER_ALIASES.standardTime.tolerancePercent
+    );
+    result.push({
+      id: uid("st"),
+      product,
+      workshop,
+      process: String(
+        getValue(row, HEADER_ALIASES.standardTime.process) ?? ""
+      ).trim(),
+      standardHours,
+      tolerancePercent:
+        toleranceRaw === "" || toleranceRaw === null
+          ? Number.NaN
+          : Number(toleranceRaw),
+      note: String(
+        getValue(row, HEADER_ALIASES.standardTime.note) ?? ""
+      ).trim(),
     });
   });
   return result;
@@ -661,6 +870,39 @@ function mergeScheduleRows(
   return { rows, added, updated };
 }
 
+function standardTimeMergeKey(row: StandardTimeRow) {
+  return [
+    normalizedText(row.product),
+    normalizedText(row.workshop),
+    normalizedText(row.process),
+  ].join("|");
+}
+
+function mergeStandardTimeRows(
+  current: StandardTimeRow[],
+  incoming: StandardTimeRow[]
+): MergeResult<StandardTimeRow> {
+  const rows = current.map((row) => ({ ...row }));
+  const indexByKey = new Map(
+    rows.map((row, index) => [standardTimeMergeKey(row), index])
+  );
+  let added = 0;
+  let updated = 0;
+  incoming.forEach((row) => {
+    const key = standardTimeMergeKey(row);
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex === undefined) {
+      rows.push({ ...row });
+      indexByKey.set(key, rows.length - 1);
+      added += 1;
+      return;
+    }
+    rows[existingIndex] = { ...row, id: rows[existingIndex].id };
+    updated += 1;
+  });
+  return { rows, added, updated };
+}
+
 function isUnchangedDemo<T extends { id: string }>(rows: T[], demo: T[]) {
   return (
     rows.length === demo.length &&
@@ -676,10 +918,13 @@ export default function Home() {
   const [tab, setTab] = useState<Tab>("overview");
   const [plan, setPlan] = useState<PlanRow[]>(DEMO_PLAN);
   const [schedule, setSchedule] = useState<ScheduleRow[]>(DEMO_SCHEDULE);
+  const [standardTimes, setStandardTimes] =
+    useState<StandardTimeRow[]>(DEMO_STANDARD_TIMES);
   const [rules, setRules] = useState<Rules>(DEFAULT_RULES);
   const [importState, setImportState] = useState<ImportState>({
     plan: false,
     schedule: false,
+    standardTime: false,
   });
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
@@ -698,6 +943,9 @@ export default function Home() {
           const data = JSON.parse(saved);
           if (Array.isArray(data.plan)) setPlan(data.plan);
           if (Array.isArray(data.schedule)) setSchedule(data.schedule);
+          setStandardTimes(
+            Array.isArray(data.standardTimes) ? data.standardTimes : []
+          );
           setImportState({
             plan:
               data.importState?.plan ??
@@ -707,6 +955,10 @@ export default function Home() {
               data.importState?.schedule ??
               (Array.isArray(data.schedule) &&
                 !isUnchangedDemo(data.schedule, DEMO_SCHEDULE)),
+            standardTime:
+              data.importState?.standardTime ??
+              (Array.isArray(data.standardTimes) &&
+                data.standardTimes.length > 0),
           });
           if (data.rules) {
             const savedRules = data.rules as Partial<Rules> & {
@@ -726,6 +978,9 @@ export default function Home() {
               )
                 ? savedRules.processClearanceRules
                 : DEFAULT_RULES.processClearanceRules,
+              standardTimeTolerancePercent:
+                savedRules.standardTimeTolerancePercent ??
+                DEFAULT_RULES.standardTimeTolerancePercent,
             });
           }
         }
@@ -740,11 +995,14 @@ export default function Home() {
     if (!loaded) return;
     localStorage.setItem(
       "aps-mini-data",
-      JSON.stringify({ plan, schedule, rules, importState })
+      JSON.stringify({ plan, schedule, standardTimes, rules, importState })
     );
-  }, [loaded, plan, schedule, rules, importState]);
+  }, [loaded, plan, schedule, standardTimes, rules, importState]);
 
-  const alerts = useMemo(() => evaluate(plan, schedule, rules), [plan, schedule, rules]);
+  const alerts = useMemo(
+    () => evaluate(plan, schedule, rules, standardTimes),
+    [plan, schedule, rules, standardTimes]
+  );
   const alertTypes = useMemo(
     () =>
       Array.from(new Set(alerts.map((item) => item.type))).map((type) => ({
@@ -790,6 +1048,11 @@ export default function Home() {
       const scheduleSheet =
         workbook.Sheets["排产明细"] ??
         workbook.Sheets[workbook.SheetNames.find((name) => name.includes("排产")) ?? ""];
+      const standardTimeSheet =
+        workbook.Sheets["标准工时"] ??
+        workbook.Sheets[
+          workbook.SheetNames.find((name) => name.includes("标准工时")) ?? ""
+        ];
       const nextPlan = planSheet
         ? parsePlanRows(
             XLSX.utils.sheet_to_json<Record<string, unknown>>(planSheet, { defval: "" }),
@@ -803,8 +1066,22 @@ export default function Home() {
             })
           )
         : [];
-      if (!nextPlan.length && !nextSchedule.length) {
-        setNotice("未识别到“生产计划”或“排产明细”工作表，请先下载模板");
+      const nextStandardTimes = standardTimeSheet
+        ? parseStandardTimeRows(
+            XLSX.utils.sheet_to_json<Record<string, unknown>>(
+              standardTimeSheet,
+              { defval: "" }
+            )
+          )
+        : [];
+      if (
+        !nextPlan.length &&
+        !nextSchedule.length &&
+        !nextStandardTimes.length
+      ) {
+        setNotice(
+          "未识别到“生产计划”“排产明细”或“标准工时”工作表，请先下载模板"
+        );
         return;
       }
       const messages: string[] = [];
@@ -846,6 +1123,23 @@ export default function Home() {
           messages.push(`排产记录首次导入${nextSchedule.length}条`);
         }
         nextImportState.schedule = true;
+      }
+
+      if (nextStandardTimes.length) {
+        if (importState.standardTime) {
+          const merged = mergeStandardTimeRows(
+            standardTimes,
+            nextStandardTimes
+          );
+          setStandardTimes(merged.rows);
+          messages.push(
+            `标准工时新增${merged.added}条、合并更新${merged.updated}条`
+          );
+        } else {
+          setStandardTimes(nextStandardTimes);
+          messages.push(`标准工时首次导入${nextStandardTimes.length}条`);
+        }
+        nextImportState.standardTime = true;
       }
 
       setImportState(nextImportState);
@@ -892,6 +1186,20 @@ export default function Home() {
       ),
       "排产明细"
     );
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(
+        DEMO_STANDARD_TIMES.map((row) => ({
+          产品名称: row.product,
+          车间: row.workshop,
+          工序: row.process,
+          "标准工时（小时）": row.standardHours,
+          "容许偏差（%）": row.tolerancePercent,
+          备注: row.note,
+        }))
+      ),
+      "标准工时"
+    );
     XLSX.writeFile(workbook, "APS-mini导入模板.xlsx");
   }
 
@@ -918,8 +1226,9 @@ export default function Home() {
   function resetDemo() {
     setPlan(DEMO_PLAN);
     setSchedule(DEMO_SCHEDULE);
+    setStandardTimes(DEMO_STANDARD_TIMES);
     setRules(DEFAULT_RULES);
-    setImportState({ plan: false, schedule: false });
+    setImportState({ plan: false, schedule: false, standardTime: false });
     setNotice("已恢复示例数据");
   }
 
@@ -958,6 +1267,7 @@ export default function Home() {
     alerts: alerts.length,
     schedule: schedule.length,
     plan: plan.length,
+    standardTime: standardTimes.length,
   };
 
   return (
@@ -1106,6 +1416,10 @@ export default function Home() {
                   <div>
                     <dt>清场间隔</dt>
                     <dd>按工序设置</dd>
+                  </div>
+                  <div>
+                    <dt>标准工时</dt>
+                    <dd>{standardTimes.length} 条基准</dd>
                   </div>
                 </dl>
               </article>
@@ -1280,6 +1594,73 @@ export default function Home() {
           </section>
         )}
 
+        {tab === "standardTime" && (
+          <section className="panel table-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">产品 · 车间 · 工序</p>
+                <h2>标准工时基准</h2>
+              </div>
+              <span className="helper">
+                同一批次同一工序的多个时段会先合计，再与标准工时比较
+              </span>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>产品</th>
+                    <th>车间</th>
+                    <th>工序</th>
+                    <th>标准工时</th>
+                    <th>容许偏差</th>
+                    <th>备注</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {standardTimes.map((row) => (
+                    <tr key={row.id}>
+                      <td><b>{row.product}</b></td>
+                      <td>{row.workshop}</td>
+                      <td>{row.process || "全部工序"}</td>
+                      <td>{row.standardHours.toFixed(1)} 小时/批</td>
+                      <td>
+                        ±
+                        {Number.isFinite(row.tolerancePercent)
+                          ? row.tolerancePercent
+                          : rules.standardTimeTolerancePercent}
+                        %
+                      </td>
+                      <td>{row.note || "—"}</td>
+                      <td>
+                        <button
+                          className="delete-button"
+                          onClick={() =>
+                            setStandardTimes(
+                              standardTimes.filter((item) => item.id !== row.id)
+                            )
+                          }
+                        >
+                          删除
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!standardTimes.length && (
+                <div className="empty-state table-empty">
+                  <b>尚未导入标准工时</b>
+                  <span>
+                    下载模板，在“标准工时”sheet中填写后上传即可
+                  </span>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
         {tab === "rules" && (
           <div className="rules-layout">
             <section className="panel rules-panel">
@@ -1296,6 +1677,21 @@ export default function Home() {
               <label>
                 <span><b>其他工序默认清场间隔（小时）</b><small>工序未单独配置时使用此值</small></span>
                 <input type="number" min="0" step="0.5" value={rules.defaultClearanceHours} onChange={(event) => setRules({ ...rules, defaultClearanceHours: Number(event.target.value) })} />
+              </label>
+              <label>
+                <span><b>标准工时默认容许偏差（%）</b><small>标准工时表未单独填写偏差时使用此值</small></span>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={rules.standardTimeTolerancePercent}
+                  onChange={(event) =>
+                    setRules({
+                      ...rules,
+                      standardTimeTolerancePercent: Number(event.target.value),
+                    })
+                  }
+                />
               </label>
               <div className="process-rules">
                 <div className="process-rules-heading">
@@ -1363,6 +1759,7 @@ export default function Home() {
                 <li><b>批次匹配：</b>优先按批号前 8 位识别同一生产批。</li>
                 <li><b>连写批号：</b>如“32607094-95”，导入后拆成两条记录。</li>
                 <li><b>清场间隔：</b>优先按工序匹配专用值；未配置工序使用默认值。</li>
+                <li><b>标准工时：</b>按产品、车间和工序匹配；同批同工序的分段排产先合计。</li>
                 <li><b>交期依据：</b>优先使用生产检验跟踪表中的许可发货日期。</li>
                 <li><b>新增数据：</b>上传或删除记录后，全部异常立即重新计算。</li>
               </ul>
