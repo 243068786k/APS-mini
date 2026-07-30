@@ -21,16 +21,33 @@ type ScheduleRow = {
   product: string;
   batch: string;
   process: string;
+  activityType: ActivityType;
   start: string;
   end: string;
   status: string;
 };
+
+type ActivityType =
+  | "生产"
+  | "清场"
+  | "装机"
+  | "调机"
+  | "取样"
+  | "等待"
+  | "验证"
+  | "其他";
+
+type Applicability = "必须" | "条件适用" | "不适用";
 
 type StandardTimeRow = {
   id: string;
   product: string;
   workshop: string;
   process: string;
+  equipment: string;
+  activityType: ActivityType;
+  applicability: Applicability;
+  triggerCondition: string;
   standardHours: number;
   tolerancePercent: number;
   note: string;
@@ -133,6 +150,7 @@ const DEMO_SCHEDULE: ScheduleRow[] = [
     product: "YF013片",
     batch: "32607094",
     process: "压片",
+    activityType: "生产",
     start: "2026-07-29T08:00",
     end: "2026-07-29T16:00",
     status: "已排产",
@@ -144,6 +162,7 @@ const DEMO_SCHEDULE: ScheduleRow[] = [
     product: "YF029片",
     batch: "32607108",
     process: "压片",
+    activityType: "生产",
     start: "2026-07-29T15:00",
     end: "2026-07-30T02:00",
     status: "已排产",
@@ -155,6 +174,7 @@ const DEMO_SCHEDULE: ScheduleRow[] = [
     product: "YF013片",
     batch: "32607095",
     process: "制粒",
+    activityType: "生产",
     start: "2026-08-11T08:00",
     end: "2026-08-11T18:00",
     status: "已排产",
@@ -166,6 +186,7 @@ const DEMO_SCHEDULE: ScheduleRow[] = [
     product: "临时插单A",
     batch: "TMP26001",
     process: "制粒",
+    activityType: "清场",
     start: "2026-08-11T19:00",
     end: "2026-08-12T04:00",
     status: "已排产",
@@ -178,6 +199,10 @@ const DEMO_STANDARD_TIMES: StandardTimeRow[] = [
     product: "YF013片",
     workshop: "二车间",
     process: "压片",
+    equipment: "压片机-01",
+    activityType: "生产",
+    applicability: "必须",
+    triggerCondition: "每批",
     standardHours: 8,
     tolerancePercent: 10,
     note: "示例：每批标准工时",
@@ -187,6 +212,10 @@ const DEMO_STANDARD_TIMES: StandardTimeRow[] = [
     product: "YF029片",
     workshop: "二车间",
     process: "压片",
+    equipment: "压片机-01",
+    activityType: "生产",
+    applicability: "必须",
+    triggerCondition: "每批",
     standardHours: 10,
     tolerancePercent: 10,
     note: "示例：每批标准工时",
@@ -196,9 +225,65 @@ const DEMO_STANDARD_TIMES: StandardTimeRow[] = [
     product: "YF013片",
     workshop: "三车间",
     process: "制粒",
+    equipment: "湿法制粒-01",
+    activityType: "生产",
+    applicability: "必须",
+    triggerCondition: "每批",
     standardHours: 10,
     tolerancePercent: 10,
     note: "示例：每批标准工时",
+  },
+  {
+    id: "st4",
+    product: "YF013片",
+    workshop: "二车间",
+    process: "压片",
+    equipment: "压片机-01",
+    activityType: "清场",
+    applicability: "必须",
+    triggerCondition: "每批或换产品",
+    standardHours: 3,
+    tolerancePercent: 15,
+    note: "示例：清场单独维护",
+  },
+  {
+    id: "st5",
+    product: "YF013片",
+    workshop: "二车间",
+    process: "压片",
+    equipment: "压片机-01",
+    activityType: "装机",
+    applicability: "条件适用",
+    triggerCondition: "更换冲模或规格件",
+    standardHours: 1,
+    tolerancePercent: 20,
+    note: "未触发时无需安排",
+  },
+  {
+    id: "st6",
+    product: "YF013片",
+    workshop: "二车间",
+    process: "压片",
+    equipment: "压片机-01",
+    activityType: "调机",
+    applicability: "条件适用",
+    triggerCondition: "换规格、换模具或首次开机",
+    standardHours: 1,
+    tolerancePercent: 20,
+    note: "需结合前后排产人工确认",
+  },
+  {
+    id: "st7",
+    product: "YF013片",
+    workshop: "二车间",
+    process: "称量",
+    equipment: "",
+    activityType: "装机",
+    applicability: "不适用",
+    triggerCondition: "",
+    standardHours: 0,
+    tolerancePercent: 10,
+    note: "示例：称量不需要装机",
   },
 ];
 
@@ -215,9 +300,9 @@ const DEFAULT_RULES: Rules = {
 const NAV: Array<{ id: Tab; label: string; hint: string }> = [
   { id: "overview", label: "审核总览", hint: "风险与优先事项" },
   { id: "alerts", label: "异常清单", hint: "自动判断结果" },
-  { id: "schedule", label: "排产明细", hint: "一批一工序一行" },
+  { id: "schedule", label: "排产明细", hint: "一批一活动一行" },
   { id: "plan", label: "生产计划", hint: "交期审核底表" },
-  { id: "standardTime", label: "标准工时", hint: "产品与车间基准" },
+  { id: "standardTime", label: "标准活动工时", hint: "按活动分别审核" },
   { id: "rules", label: "规则参数", hint: "预警与清场设置" },
 ];
 
@@ -237,6 +322,7 @@ const HEADER_ALIASES = {
     product: ["产品名称", "品名", "产品"],
     batch: ["批号", "生产批号", "批次"],
     process: ["工序", "生产工序"],
+    activityType: ["活动类型", "时间类型", "作业类型"],
     start: ["开始时间", "计划开始时间", "开始日期"],
     end: ["结束时间", "计划结束时间", "结束日期"],
     status: ["状态", "排产状态"],
@@ -245,6 +331,10 @@ const HEADER_ALIASES = {
     product: ["产品名称", "品名", "产品"],
     workshop: ["车间", "生产车间"],
     process: ["工序", "生产工序"],
+    equipment: ["设备", "设备名称", "适用设备"],
+    activityType: ["活动类型", "时间类型", "作业类型"],
+    applicability: ["适用规则", "是否适用", "适用性"],
+    triggerCondition: ["触发条件", "适用条件", "判断条件"],
     standardHours: [
       "标准工时（小时）",
       "标准工时(小时)",
@@ -312,6 +402,30 @@ function batchKey(batch: string) {
 
 function normalizedText(value: string) {
   return String(value ?? "").trim().replace(/\s+/g, "").toUpperCase();
+}
+
+const ACTIVITY_TYPES: ActivityType[] = [
+  "生产",
+  "清场",
+  "装机",
+  "调机",
+  "取样",
+  "等待",
+  "验证",
+  "其他",
+];
+
+function asActivityType(value: unknown): ActivityType {
+  const text = String(value ?? "").trim();
+  return ACTIVITY_TYPES.includes(text as ActivityType)
+    ? (text as ActivityType)
+    : "生产";
+}
+
+function asApplicability(value: unknown): Applicability {
+  const text = String(value ?? "").trim();
+  if (text === "条件适用" || text === "不适用") return text;
+  return "必须";
 }
 
 function dateTime(value: string) {
@@ -432,10 +546,12 @@ function evaluate(
   }
 
   const deviceGroups = new Map<string, ScheduleRow[]>();
-  sorted.forEach((row) => {
+  sorted
+    .filter((row) => asActivityType(row.activityType) === "生产")
+    .forEach((row) => {
     const key = `${row.workshop}|${row.equipment}`;
     deviceGroups.set(key, [...(deviceGroups.get(key) ?? []), row]);
-  });
+    });
   deviceGroups.forEach((rows) => {
     rows.forEach((row, index) => {
       const next = rows[index + 1];
@@ -479,10 +595,12 @@ function evaluate(
   });
 
   if (standardTimes.length) {
-    const workGroups = new Map<
-      string,
-      { row: ScheduleRow; hours: number }
-    >();
+    type WorkGroup = {
+      row: ScheduleRow;
+      activities: Map<ActivityType, number>;
+    };
+    const operationGroups = new Map<string, WorkGroup>();
+
     schedule.forEach((row) => {
       const start = dateTime(row.start);
       const end = dateTime(row.end);
@@ -492,81 +610,130 @@ function evaluate(
         normalizedText(row.product),
         normalizedText(row.workshop),
         normalizedText(row.process),
+        normalizedText(row.equipment),
       ].join("|");
-      const current = workGroups.get(key);
-      workGroups.set(key, {
-        row: current?.row ?? row,
-        hours:
-          (current?.hours ?? 0) +
-          (end.getTime() - start.getTime()) / 3600000,
-      });
+      const current = operationGroups.get(key) ?? {
+        row,
+        activities: new Map<ActivityType, number>(),
+      };
+      const activityType = asActivityType(row.activityType);
+      current.activities.set(
+        activityType,
+        (current.activities.get(activityType) ?? 0) +
+          (end.getTime() - start.getTime()) / 3600000
+      );
+      operationGroups.set(key, current);
     });
 
-    workGroups.forEach(({ row, hours }) => {
+    operationGroups.forEach(({ row, activities }) => {
       const product = normalizedText(row.product);
       const workshop = normalizedText(row.workshop);
       const process = normalizedText(row.process);
-      const candidates = standardTimes.filter(
-        (standard) =>
+      const equipment = normalizedText(row.equipment);
+      const standards = standardTimes.filter((standard) => {
+        const equipmentMatches =
+          !normalizedText(standard.equipment) ||
+          normalizedText(standard.equipment) === equipment;
+        return (
           normalizedText(standard.product) === product &&
-          normalizedText(standard.workshop) === workshop
-      );
-      const standard =
-        candidates.find(
-          (item) => normalizedText(item.process) === process
-        ) ?? candidates.find((item) => !normalizedText(item.process));
+          normalizedText(standard.workshop) === workshop &&
+          normalizedText(standard.process) === process &&
+          equipmentMatches
+        );
+      });
 
-      if (!standard) {
-        alerts.push({
-          id: `standard-missing-${row.id}`,
-          type: "未维护标准工时",
-          level: "低",
-          batch: row.batch,
-          product: row.product,
-          time: `${hours.toFixed(1)} 小时`,
-          detail: `${row.workshop}的${row.process || "未填写"}工序未找到该产品的标准工时。`,
-          action: "在“标准工时”sheet中补充产品、车间和工序基准",
-        });
-        return;
-      }
+      activities.forEach((hours, activityType) => {
+        const standard = standards.find(
+          (item) => asActivityType(item.activityType) === activityType
+        );
+        if (!standard) {
+          alerts.push({
+            id: `standard-missing-${row.id}-${activityType}`,
+            type: "未维护标准活动工时",
+            level: "低",
+            batch: row.batch,
+            product: row.product,
+            time: `${activityType} ${hours.toFixed(1)} 小时`,
+            detail: `${row.workshop}${row.process}的“${activityType}”未找到对应工时基准。`,
+            action: "在“标准活动工时”sheet中补充活动类型及适用规则",
+          });
+          return;
+        }
 
-      const tolerance =
-        Number.isFinite(standard.tolerancePercent) &&
-        standard.tolerancePercent >= 0
-          ? standard.tolerancePercent
-          : rules.standardTimeTolerancePercent;
-      const lower = standard.standardHours * (1 - tolerance / 100);
-      const upper = standard.standardHours * (1 + tolerance / 100);
-      const deviation =
-        ((hours - standard.standardHours) / standard.standardHours) * 100;
+        if (standard.applicability === "不适用") {
+          alerts.push({
+            id: `activity-not-applicable-${row.id}-${activityType}`,
+            type: "不适用活动已排入",
+            level: "中",
+            batch: row.batch,
+            product: row.product,
+            time: `${activityType} ${hours.toFixed(1)} 小时`,
+            detail: `${row.workshop}${row.process}被设为不适用“${activityType}”，但排产中已安排该活动。`,
+            action: "确认是否误填活动类型，或更新该工序的适用规则",
+          });
+          return;
+        }
 
-      if (hours > upper) {
-        alerts.push({
-          id: `standard-over-${row.id}`,
-          type: "排产工时超出标准",
-          level: "中",
-          batch: row.batch,
-          product: row.product,
-          time: `${hours.toFixed(1)} / ${standard.standardHours.toFixed(1)} 小时`,
-          detail: `${row.workshop}${row.process}排产总时长较标准工时高${Math.abs(
-            deviation
-          ).toFixed(1)}%，超出±${tolerance}%容许范围。`,
-          action: "核对是否包含等待、清场或停机时间，并确认排产时长",
-        });
-      } else if (hours < lower) {
-        alerts.push({
-          id: `standard-under-${row.id}`,
-          type: "排产工时低于标准",
-          level: "中",
-          batch: row.batch,
-          product: row.product,
-          time: `${hours.toFixed(1)} / ${standard.standardHours.toFixed(1)} 小时`,
-          detail: `${row.workshop}${row.process}排产总时长较标准工时低${Math.abs(
-            deviation
-          ).toFixed(1)}%，超出±${tolerance}%容许范围。`,
-          action: "核对是否漏排时段、批量不同或标准工时需要更新",
-        });
-      }
+        const tolerance =
+          Number.isFinite(standard.tolerancePercent) &&
+          standard.tolerancePercent >= 0
+            ? standard.tolerancePercent
+            : rules.standardTimeTolerancePercent;
+        const lower = standard.standardHours * (1 - tolerance / 100);
+        const upper = standard.standardHours * (1 + tolerance / 100);
+        const deviation =
+          ((hours - standard.standardHours) / standard.standardHours) * 100;
+
+        if (hours > upper || hours < lower) {
+          const isOver = hours > upper;
+          alerts.push({
+            id: `activity-standard-${isOver ? "over" : "under"}-${row.id}-${activityType}`,
+            type: isOver ? "活动工时超出标准" : "活动工时低于标准",
+            level: "中",
+            batch: row.batch,
+            product: row.product,
+            time: `${activityType} ${hours.toFixed(1)} / ${standard.standardHours.toFixed(1)} 小时`,
+            detail: `${row.workshop}${row.process}的“${activityType}”工时较标准${
+              isOver ? "高" : "低"
+            }${Math.abs(deviation).toFixed(1)}%，超出±${tolerance}%容许范围。`,
+            action: isOver
+              ? "核对是否混入其他活动、等待或停机时间"
+              : "核对是否漏排活动时段、批量不同或标准需更新",
+          });
+        }
+      });
+
+      standards.forEach((standard) => {
+        const activityType = asActivityType(standard.activityType);
+        if (activities.has(activityType) || standard.applicability === "不适用") {
+          return;
+        }
+        if (standard.applicability === "必须") {
+          alerts.push({
+            id: `required-activity-missing-${row.id}-${activityType}`,
+            type: "必需活动未安排",
+            level: "中",
+            batch: row.batch,
+            product: row.product,
+            time: activityType,
+            detail: `${row.workshop}${row.process}按标准应安排“${activityType}”，当前排产中未找到。`,
+            action: "补充该活动时段，或确认标准适用规则是否需要调整",
+          });
+        } else {
+          alerts.push({
+            id: `conditional-activity-review-${row.id}-${activityType}`,
+            type: "条件活动待人工确认",
+            level: "低",
+            batch: row.batch,
+            product: row.product,
+            time: activityType,
+            detail: `${row.workshop}${row.process}的“${activityType}”为条件适用：${
+              standard.triggerCondition || "尚未填写触发条件"
+            }。当前排产中未安排。`,
+            action: "确认本批是否触发；未触发可视为合理安排",
+          });
+        }
+      });
     });
   }
 
@@ -688,6 +855,9 @@ function parseScheduleRows(rows: Record<string, unknown>[]) {
         process: String(
           getValue(row, HEADER_ALIASES.schedule.process) ?? ""
         ).trim(),
+        activityType: asActivityType(
+          getValue(row, HEADER_ALIASES.schedule.activityType)
+        ),
         start: asDate(getValue(row, HEADER_ALIASES.schedule.start), true),
         end: asDate(getValue(row, HEADER_ALIASES.schedule.end), true),
         status: String(
@@ -708,14 +878,17 @@ function parseStandardTimeRows(rows: Record<string, unknown>[]) {
     const workshop = String(
       getValue(row, HEADER_ALIASES.standardTime.workshop) ?? ""
     ).trim();
+    const applicability = asApplicability(
+      getValue(row, HEADER_ALIASES.standardTime.applicability)
+    );
     const standardHours = Number(
       getValue(row, HEADER_ALIASES.standardTime.standardHours)
     );
     if (
       !product ||
       !workshop ||
-      !Number.isFinite(standardHours) ||
-      standardHours <= 0
+      (!Number.isFinite(standardHours) ||
+        (standardHours <= 0 && applicability !== "不适用"))
     ) {
       return;
     }
@@ -729,6 +902,16 @@ function parseStandardTimeRows(rows: Record<string, unknown>[]) {
       workshop,
       process: String(
         getValue(row, HEADER_ALIASES.standardTime.process) ?? ""
+      ).trim(),
+      equipment: String(
+        getValue(row, HEADER_ALIASES.standardTime.equipment) ?? ""
+      ).trim(),
+      activityType: asActivityType(
+        getValue(row, HEADER_ALIASES.standardTime.activityType)
+      ),
+      applicability,
+      triggerCondition: String(
+        getValue(row, HEADER_ALIASES.standardTime.triggerCondition) ?? ""
       ).trim(),
       standardHours,
       tolerancePercent:
@@ -748,7 +931,9 @@ function planMergeKey(row: PlanRow) {
 }
 
 function scheduleBaseKey(row: ScheduleRow) {
-  return `${batchKey(row.batch)}|${normalizedText(row.process)}`;
+  return `${batchKey(row.batch)}|${normalizedText(row.process)}|${normalizedText(
+    row.activityType
+  )}`;
 }
 
 function scheduleMergeKey(row: ScheduleRow) {
@@ -780,6 +965,7 @@ function mergeScheduleRecord(
     product: incoming.product || current.product,
     batch: incoming.batch || current.batch,
     process: incoming.process || current.process,
+    activityType: incoming.activityType || current.activityType || "生产",
     start: incoming.start || current.start,
     end: incoming.end || current.end,
     status: incoming.status || current.status || "已排产",
@@ -875,6 +1061,8 @@ function standardTimeMergeKey(row: StandardTimeRow) {
     normalizedText(row.product),
     normalizedText(row.workshop),
     normalizedText(row.process),
+    normalizedText(row.equipment),
+    normalizedText(row.activityType),
   ].join("|");
 }
 
@@ -942,9 +1130,24 @@ export default function Home() {
         if (saved) {
           const data = JSON.parse(saved);
           if (Array.isArray(data.plan)) setPlan(data.plan);
-          if (Array.isArray(data.schedule)) setSchedule(data.schedule);
+          if (Array.isArray(data.schedule)) {
+            setSchedule(
+              data.schedule.map((row: ScheduleRow) => ({
+                ...row,
+                activityType: asActivityType(row.activityType),
+              }))
+            );
+          }
           setStandardTimes(
-            Array.isArray(data.standardTimes) ? data.standardTimes : []
+            Array.isArray(data.standardTimes)
+              ? data.standardTimes.map((row: StandardTimeRow) => ({
+                  ...row,
+                  equipment: row.equipment ?? "",
+                  activityType: asActivityType(row.activityType),
+                  applicability: asApplicability(row.applicability),
+                  triggerCondition: row.triggerCondition ?? "",
+                }))
+              : []
           );
           setImportState({
             plan:
@@ -1032,6 +1235,7 @@ export default function Home() {
       medium: alerts.filter((item) => item.level === "中").length,
       low: alerts.filter((item) => item.level === "低").length,
       unscheduled: alerts.filter((item) => item.type === "计划未排产").length,
+      manual: alerts.filter((item) => item.type.includes("待人工确认")).length,
     }),
     [alerts]
   );
@@ -1049,9 +1253,12 @@ export default function Home() {
         workbook.Sheets["排产明细"] ??
         workbook.Sheets[workbook.SheetNames.find((name) => name.includes("排产")) ?? ""];
       const standardTimeSheet =
+        workbook.Sheets["标准活动工时"] ??
         workbook.Sheets["标准工时"] ??
         workbook.Sheets[
-          workbook.SheetNames.find((name) => name.includes("标准工时")) ?? ""
+          workbook.SheetNames.find(
+            (name) => name.includes("标准") && name.includes("工时")
+          ) ?? ""
         ];
       const nextPlan = planSheet
         ? parsePlanRows(
@@ -1080,7 +1287,7 @@ export default function Home() {
         !nextStandardTimes.length
       ) {
         setNotice(
-          "未识别到“生产计划”“排产明细”或“标准工时”工作表，请先下载模板"
+          "未识别到“生产计划”“排产明细”或“标准活动工时”工作表，请先下载模板"
         );
         return;
       }
@@ -1133,11 +1340,11 @@ export default function Home() {
           );
           setStandardTimes(merged.rows);
           messages.push(
-            `标准工时新增${merged.added}条、合并更新${merged.updated}条`
+            `标准活动工时新增${merged.added}条、合并更新${merged.updated}条`
           );
         } else {
           setStandardTimes(nextStandardTimes);
-          messages.push(`标准工时首次导入${nextStandardTimes.length}条`);
+          messages.push(`标准活动工时首次导入${nextStandardTimes.length}条`);
         }
         nextImportState.standardTime = true;
       }
@@ -1179,6 +1386,7 @@ export default function Home() {
           产品名称: row.product,
           批号: row.batch,
           工序: row.process,
+          活动类型: row.activityType,
           开始时间: row.start,
           结束时间: row.end,
           状态: row.status,
@@ -1193,12 +1401,16 @@ export default function Home() {
           产品名称: row.product,
           车间: row.workshop,
           工序: row.process,
+          设备: row.equipment,
+          活动类型: row.activityType,
+          适用规则: row.applicability,
+          触发条件: row.triggerCondition,
           "标准工时（小时）": row.standardHours,
           "容许偏差（%）": row.tolerancePercent,
           备注: row.note,
         }))
       ),
-      "标准工时"
+      "标准活动工时"
     );
     XLSX.writeFile(workbook, "APS-mini导入模板.xlsx");
   }
@@ -1358,6 +1570,11 @@ export default function Home() {
                 <strong>{summary.unscheduled}</strong>
                 <small>按要求完成日期优先处理</small>
               </article>
+              <article className="metric-card">
+                <span>待人工确认</span>
+                <strong className="info-text">{summary.manual}</strong>
+                <small>条件活动需结合实际切换判断</small>
+              </article>
             </section>
 
             <section className="panel priority-panel">
@@ -1418,8 +1635,8 @@ export default function Home() {
                     <dd>按工序设置</dd>
                   </div>
                   <div>
-                    <dt>标准工时</dt>
-                    <dd>{standardTimes.length} 条基准</dd>
+                    <dt>标准活动工时</dt>
+                    <dd>{standardTimes.length} 条活动基准</dd>
                   </div>
                 </dl>
               </article>
@@ -1428,8 +1645,8 @@ export default function Home() {
                 <h2>三步完成审核</h2>
                 <ol>
                   <li><span>1</span><p><b>更新生产计划</b><small>录入许可发货日期和待生产批次</small></p></li>
-                  <li><span>2</span><p><b>维护排产明细</b><small>按车间、设备和开始时间排序</small></p></li>
-                  <li><span>3</span><p><b>处理异常清单</b><small>优先确认高风险和未排产批次</small></p></li>
+                  <li><span>2</span><p><b>拆分排产活动</b><small>区分生产、清场、装机、调机等时间</small></p></li>
+                  <li><span>3</span><p><b>处理异常清单</b><small>先核实高风险，再确认条件适用活动</small></p></li>
                 </ol>
               </article>
             </section>
@@ -1531,17 +1748,17 @@ export default function Home() {
           <section className="panel table-panel">
             <div className="panel-heading">
               <div>
-                <p className="eyebrow">唯一排产数据底表</p>
+                <p className="eyebrow">工序 · 活动 · 时间</p>
                 <h2>排产明细</h2>
               </div>
-              <span className="helper">连写批号导入时自动拆分为一批一行</span>
+              <span className="helper">同一工序可拆分为生产、清场、装机、调机等多条活动</span>
             </div>
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
                     <th>车间</th><th>设备</th><th>产品</th><th>批号</th>
-                    <th>工序</th><th>开始时间</th><th>结束时间</th><th>状态</th><th />
+                    <th>工序</th><th>活动类型</th><th>开始时间</th><th>结束时间</th><th>状态</th><th />
                   </tr>
                 </thead>
                 <tbody>
@@ -1549,6 +1766,7 @@ export default function Home() {
                     <tr key={row.id}>
                       <td>{row.workshop}</td><td>{row.equipment}</td><td>{row.product}</td>
                       <td><b>{row.batch}</b></td><td>{row.process}</td>
+                      <td><span className={`activity-tag activity-${row.activityType}`}>{row.activityType}</span></td>
                       <td>{formatDate(row.start, true)}</td><td>{formatDate(row.end, true)}</td>
                       <td><span className="tag">{row.status}</span></td>
                       <td><button className="delete-button" onClick={() => setSchedule(schedule.filter((item) => item.id !== row.id))}>删除</button></td>
@@ -1598,12 +1816,17 @@ export default function Home() {
           <section className="panel table-panel">
             <div className="panel-heading">
               <div>
-                <p className="eyebrow">产品 · 车间 · 工序</p>
-                <h2>标准工时基准</h2>
+                <p className="eyebrow">产品 · 车间 · 工序 · 活动</p>
+                <h2>标准活动工时库</h2>
               </div>
               <span className="helper">
-                同一批次同一工序的多个时段会先合计，再与标准工时比较
+                一种活动一行；系统只审核该工序实际适用的活动
               </span>
+            </div>
+            <div className="activity-guide">
+              <span><b>必须</b> 每批应安排</span>
+              <span><b>条件适用</b> 触发后才需要</span>
+              <span><b>不适用</b> 不参与缺失判断</span>
             </div>
             <div className="table-wrap">
               <table>
@@ -1612,6 +1835,10 @@ export default function Home() {
                     <th>产品</th>
                     <th>车间</th>
                     <th>工序</th>
+                    <th>设备</th>
+                    <th>活动类型</th>
+                    <th>适用规则</th>
+                    <th>触发条件</th>
                     <th>标准工时</th>
                     <th>容许偏差</th>
                     <th>备注</th>
@@ -1623,8 +1850,16 @@ export default function Home() {
                     <tr key={row.id}>
                       <td><b>{row.product}</b></td>
                       <td>{row.workshop}</td>
-                      <td>{row.process || "全部工序"}</td>
-                      <td>{row.standardHours.toFixed(1)} 小时/批</td>
+                      <td>{row.process}</td>
+                      <td>{row.equipment || "不限设备"}</td>
+                      <td><span className={`activity-tag activity-${row.activityType}`}>{row.activityType}</span></td>
+                      <td><span className={`applicability applicability-${row.applicability}`}>{row.applicability}</span></td>
+                      <td>{row.triggerCondition || "—"}</td>
+                      <td>
+                        {row.applicability === "不适用"
+                          ? "—"
+                          : `${row.standardHours.toFixed(1)} 小时/批`}
+                      </td>
                       <td>
                         ±
                         {Number.isFinite(row.tolerancePercent)
@@ -1651,9 +1886,9 @@ export default function Home() {
               </table>
               {!standardTimes.length && (
                 <div className="empty-state table-empty">
-                  <b>尚未导入标准工时</b>
+                  <b>尚未导入标准活动工时</b>
                   <span>
-                    下载模板，在“标准工时”sheet中填写后上传即可
+                    下载模板，在“标准活动工时”sheet中按活动逐行填写
                   </span>
                 </div>
               )}
@@ -1679,7 +1914,7 @@ export default function Home() {
                 <input type="number" min="0" step="0.5" value={rules.defaultClearanceHours} onChange={(event) => setRules({ ...rules, defaultClearanceHours: Number(event.target.value) })} />
               </label>
               <label>
-                <span><b>标准工时默认容许偏差（%）</b><small>标准工时表未单独填写偏差时使用此值</small></span>
+                <span><b>标准活动工时默认容许偏差（%）</b><small>标准活动工时表未单独填写偏差时使用此值</small></span>
                 <input
                   type="number"
                   min="0"
@@ -1759,7 +1994,8 @@ export default function Home() {
                 <li><b>批次匹配：</b>优先按批号前 8 位识别同一生产批。</li>
                 <li><b>连写批号：</b>如“32607094-95”，导入后拆成两条记录。</li>
                 <li><b>清场间隔：</b>优先按工序匹配专用值；未配置工序使用默认值。</li>
-                <li><b>标准工时：</b>按产品、车间和工序匹配；同批同工序的分段排产先合计。</li>
+                <li><b>活动工时：</b>按产品、车间、工序、设备和活动类型匹配；同类分段时段先合计。</li>
+                <li><b>适用规则：</b>“必须”缺失会提示异常；“条件适用”缺失进入待人工确认；“不适用”不会误判缺失。</li>
                 <li><b>交期依据：</b>优先使用生产检验跟踪表中的许可发货日期。</li>
                 <li><b>新增数据：</b>上传或删除记录后，全部异常立即重新计算。</li>
               </ul>
