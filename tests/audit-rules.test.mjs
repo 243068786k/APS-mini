@@ -15,7 +15,7 @@ const { outputText } = ts.transpileModule(source, {
   fileName: "page.tsx",
 });
 await writeFile(compiledUrl, outputText);
-const { evaluate } = await import(`${compiledUrl.href}?run=${Date.now()}`);
+const { evaluate, mergeScheduleRows } = await import(`${compiledUrl.href}?run=${Date.now()}`);
 
 after(async () => {
   await rm(compiledUrl, { force: true });
@@ -132,4 +132,56 @@ test("模具编码缺失时转为人工确认而非强判异常", () => {
   const types = alertTypes([plan("BATCH005"), plan("BATCH006")], rows, [], switchRules);
   assert.equal(types.includes("切换条件待人工确认"), true);
   assert.equal(types.includes("切换活动缺失"), false);
+});
+
+test("范围更新时保留范围外记录，并在范围内保留、替换、新增和取消", () => {
+  const current = [
+    schedule({ id: "outside", batch: "OUT001", process: "压片", start: "2099-09-30T08:00", end: "2099-09-30T12:00" }),
+    schedule({ id: "same", batch: "SAME001", process: "压片", start: "2099-10-01T08:00", end: "2099-10-01T12:00" }),
+    schedule({ id: "replace", batch: "OLD001", product: "旧产品", process: "压片", start: "2099-10-01T13:00", end: "2099-10-01T17:00" }),
+    schedule({ id: "cancel", batch: "CANCEL01", process: "压片", start: "2099-10-01T18:00", end: "2099-10-01T20:00" }),
+  ];
+  const incoming = [
+    schedule({ id: "incoming-same", batch: "SAME001", process: "压片", start: "2099-10-01T08:00", end: "2099-10-01T12:00" }),
+    schedule({ id: "incoming-replace", batch: "NEW001", product: "新产品", process: "压片", start: "2099-10-01T13:00", end: "2099-10-01T17:00" }),
+    schedule({ id: "incoming-new", batch: "NEW002", product: "新增产品", process: "压片", start: "2099-10-01T21:00", end: "2099-10-01T23:00" }),
+  ];
+
+  const result = mergeScheduleRows(current, incoming, "rangeUpdate");
+
+  assert.equal(result.unchanged, 1);
+  assert.equal(result.updated, 1);
+  assert.equal(result.added, 1);
+  assert.equal(result.cancelled, 1);
+  assert.equal(result.rows.find((row) => row.id === "outside")?.status, "已排产");
+  assert.equal(result.rows.find((row) => row.id === "same")?.id, "same");
+  assert.equal(result.rows.find((row) => row.id === "replace")?.product, "新产品");
+  assert.equal(result.rows.find((row) => row.id === "cancel")?.status, "已取消");
+});
+
+test("范围更新不覆盖实际或下游状态记录", () => {
+  const actual = {
+    ...schedule({ id: "actual", batch: "ACTUAL01", product: "实际产品", process: "压片", start: "2099-10-02T08:00", end: "2099-10-02T12:00" }),
+    status: "生产中",
+  };
+  const incoming = [
+    schedule({ id: "planned", batch: "PLAN001", product: "调整产品", process: "压片", start: "2099-10-02T08:00", end: "2099-10-02T12:00" }),
+  ];
+
+  const result = mergeScheduleRows([actual], incoming, "rangeUpdate");
+
+  assert.equal(result.protected, 1);
+  assert.equal(result.updated, 0);
+  assert.equal(result.added, 0);
+  assert.equal(result.rows[0].product, "实际产品");
+  assert.equal(result.rows[0].status, "生产中");
+});
+
+test("已取消排产不再参与异常审核", () => {
+  const cancelled = {
+    ...schedule({ id: "cancelled", batch: "CANCEL02", process: "压片", start: "2099-10-03T08:00", end: "2099-10-03T12:00" }),
+    status: "已取消",
+  };
+  const types = alertTypes([], [cancelled]);
+  assert.equal(types.includes("未匹配生产计划"), false);
 });
