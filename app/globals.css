@@ -240,6 +240,29 @@ h2 {
   align-items: center;
 }
 
+.import-mode {
+  min-width: 174px;
+  display: grid;
+  gap: 3px;
+}
+
+.import-mode span {
+  color: #6f7e76;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.import-mode select {
+  min-height: 40px;
+  padding: 0 32px 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .filters {
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -966,10 +989,16 @@ footer {
 
   .top-actions {
     width: 100%;
+    flex-wrap: wrap;
   }
 
   .top-actions .button {
     flex: 1;
+  }
+
+  .import-mode {
+    order: 3;
+    width: 100%;
   }
 
   .two-column,
