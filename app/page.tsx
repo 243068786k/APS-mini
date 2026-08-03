@@ -22,9 +22,32 @@ type ScheduleRow = {
   batch: string;
   process: string;
   activityType: ActivityType;
+  specification: string;
+  toolingCode: string;
   start: string;
   end: string;
   status: string;
+};
+
+type RouteRow = {
+  id: string;
+  product: string;
+  workshop: string;
+  sequence: number;
+  process: string;
+  required: boolean;
+  note: string;
+};
+
+type SwitchRuleRow = {
+  id: string;
+  workshop: string;
+  process: string;
+  equipment: string;
+  triggerType: "换产品" | "换规格" | "换模具" | "任意切换";
+  requiredActivity: ActivityType;
+  applicability: Applicability;
+  note: string;
 };
 
 type ActivityType =
@@ -71,6 +94,8 @@ type ImportState = {
   plan: boolean;
   schedule: boolean;
   standardTime: boolean;
+  routes: boolean;
+  switchRules: boolean;
 };
 
 type MergeResult<T> = {
@@ -78,6 +103,14 @@ type MergeResult<T> = {
   added: number;
   updated: number;
 };
+
+type ScheduleMergeResult = MergeResult<ScheduleRow> & {
+  unchanged: number;
+  cancelled: number;
+  protected: number;
+};
+
+type ScheduleImportMode = "rangeUpdate" | "append";
 
 type AlertLevel = "高" | "中" | "低";
 type Alert = {
@@ -97,6 +130,8 @@ type Tab =
   | "schedule"
   | "plan"
   | "standardTime"
+  | "routes"
+  | "switchRules"
   | "rules";
 
 const DEMO_PLAN: PlanRow[] = [
@@ -151,6 +186,8 @@ const DEMO_SCHEDULE: ScheduleRow[] = [
     batch: "32607094",
     process: "压片",
     activityType: "生产",
+    specification: "50 mg",
+    toolingCode: "50MG-A",
     start: "2026-07-29T08:00",
     end: "2026-07-29T16:00",
     status: "已排产",
@@ -163,6 +200,8 @@ const DEMO_SCHEDULE: ScheduleRow[] = [
     batch: "32607108",
     process: "压片",
     activityType: "生产",
+    specification: "100 mg",
+    toolingCode: "100MG-A",
     start: "2026-07-29T15:00",
     end: "2026-07-30T02:00",
     status: "已排产",
@@ -175,6 +214,8 @@ const DEMO_SCHEDULE: ScheduleRow[] = [
     batch: "32607095",
     process: "制粒",
     activityType: "生产",
+    specification: "50 mg",
+    toolingCode: "",
     start: "2026-08-11T08:00",
     end: "2026-08-11T18:00",
     status: "已排产",
@@ -187,10 +228,24 @@ const DEMO_SCHEDULE: ScheduleRow[] = [
     batch: "TMP26001",
     process: "制粒",
     activityType: "清场",
+    specification: "",
+    toolingCode: "",
     start: "2026-08-11T19:00",
     end: "2026-08-12T04:00",
     status: "已排产",
   },
+];
+
+const DEMO_ROUTES: RouteRow[] = [
+  { id: "r1", product: "YF013片", workshop: "三车间", sequence: 1, process: "制粒", required: true, note: "" },
+  { id: "r2", product: "YF013片", workshop: "二车间", sequence: 2, process: "压片", required: true, note: "" },
+  { id: "r3", product: "YF013片", workshop: "二车间", sequence: 3, process: "包衣", required: true, note: "" },
+];
+
+const DEMO_SWITCH_RULES: SwitchRuleRow[] = [
+  { id: "sw1", workshop: "二车间", process: "压片", equipment: "压片机-01", triggerType: "换产品", requiredActivity: "清场", applicability: "必须", note: "换产品必须安排清场" },
+  { id: "sw2", workshop: "二车间", process: "压片", equipment: "压片机-01", triggerType: "换模具", requiredActivity: "装机", applicability: "必须", note: "依据模具/规格件编码判断" },
+  { id: "sw3", workshop: "二车间", process: "压片", equipment: "压片机-01", triggerType: "换规格", requiredActivity: "调机", applicability: "条件适用", note: "规格变化后确认是否需要调机" },
 ];
 
 const DEMO_STANDARD_TIMES: StandardTimeRow[] = [
@@ -303,6 +358,8 @@ const NAV: Array<{ id: Tab; label: string; hint: string }> = [
   { id: "schedule", label: "排产明细", hint: "一批一活动一行" },
   { id: "plan", label: "生产计划", hint: "交期审核底表" },
   { id: "standardTime", label: "标准活动工时", hint: "按活动分别审核" },
+  { id: "routes", label: "产品工艺路线", hint: "工序顺序与必需工序" },
+  { id: "switchRules", label: "设备切换规则", hint: "清场装机调机条件" },
   { id: "rules", label: "规则参数", hint: "预警与清场设置" },
 ];
 
@@ -323,6 +380,8 @@ const HEADER_ALIASES = {
     batch: ["批号", "生产批号", "批次"],
     process: ["工序", "生产工序"],
     activityType: ["活动类型", "时间类型", "作业类型"],
+    specification: ["规格", "产品规格"],
+    toolingCode: ["模具/规格件编码", "模具编码", "规格件编码", "模具"],
     start: ["开始时间", "计划开始时间", "开始日期"],
     end: ["结束时间", "计划结束时间", "结束日期"],
     status: ["状态", "排产状态"],
@@ -347,6 +406,23 @@ const HEADER_ALIASES = {
       "容许偏差",
       "偏差比例",
     ],
+    note: ["备注", "说明"],
+  },
+  routes: {
+    product: ["产品名称", "品名", "产品"],
+    workshop: ["车间", "生产车间"],
+    sequence: ["工序序号", "顺序", "序号"],
+    process: ["工序", "生产工序"],
+    required: ["是否必需", "必需工序", "是否必须"],
+    note: ["备注", "说明"],
+  },
+  switchRules: {
+    workshop: ["车间", "生产车间"],
+    process: ["工序", "生产工序"],
+    equipment: ["设备", "设备名称"],
+    triggerType: ["触发类型", "切换类型", "触发条件"],
+    requiredActivity: ["必需活动", "活动类型", "需要安排"],
+    applicability: ["适用规则", "是否适用", "适用性"],
     note: ["备注", "说明"],
   },
 };
@@ -428,6 +504,19 @@ function asApplicability(value: unknown): Applicability {
   return "必须";
 }
 
+function asRequired(value: unknown) {
+  const text = String(value ?? "").trim().toLowerCase();
+  return !["否", "不必需", "非必需", "no", "false", "0"].includes(text);
+}
+
+function asSwitchTrigger(value: unknown): SwitchRuleRow["triggerType"] {
+  const text = String(value ?? "").trim();
+  if (text.includes("模具")) return "换模具";
+  if (text.includes("规格")) return "换规格";
+  if (text.includes("产品")) return "换产品";
+  return "任意切换";
+}
+
 function dateTime(value: string) {
   const parts = value?.match(
     /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/
@@ -483,12 +572,15 @@ function clearanceHoursForProcess(process: string, rules: Rules) {
   return matched?.hours ?? rules.defaultClearanceHours;
 }
 
-function evaluate(
+export function evaluate(
   plan: PlanRow[],
   schedule: ScheduleRow[],
   rules: Rules,
-  standardTimes: StandardTimeRow[]
+  standardTimes: StandardTimeRow[],
+  routes: RouteRow[],
+  switchRules: SwitchRuleRow[]
 ): Alert[] {
+  schedule = schedule.filter((row) => !/取消|移出排产/.test(row.status));
   const alerts: Alert[] = [];
   const sorted = [...schedule].sort(
     (a, b) => (dateTime(a.start)?.getTime() ?? 0) - (dateTime(b.start)?.getTime() ?? 0)
@@ -592,6 +684,183 @@ function evaluate(
         action: "确认是否为临时插单、批号录入差异或漏登计划",
       });
     }
+  });
+
+  const planByBatch = new Map(plan.map((row) => [batchKey(row.batch), row]));
+  const scheduleByBatch = new Map<string, ScheduleRow[]>();
+  schedule.forEach((row) => {
+    const key = batchKey(row.batch);
+    scheduleByBatch.set(key, [...(scheduleByBatch.get(key) ?? []), row]);
+  });
+
+  const routesByProduct = new Map<string, RouteRow[]>();
+  routes.forEach((row) => {
+    const key = normalizedText(row.product);
+    routesByProduct.set(key, [...(routesByProduct.get(key) ?? []), row]);
+  });
+  scheduleByBatch.forEach((batchRows, key) => {
+    const planRow = planByBatch.get(key);
+    const product = planRow?.product || batchRows[0]?.product || "";
+    const route = [...(routesByProduct.get(normalizedText(product)) ?? [])].sort(
+      (a, b) => a.sequence - b.sequence
+    );
+    if (!route.length) return;
+    const present = new Map<string, ScheduleRow[]>();
+    batchRows.forEach((row) => {
+      const processKey = normalizedText(row.process);
+      present.set(processKey, [...(present.get(processKey) ?? []), row]);
+    });
+    const presentSequences = route
+      .filter((row) => present.has(normalizedText(row.process)))
+      .map((row) => row.sequence);
+    const maxPresent = Math.max(0, ...presentSequences);
+    const downstreamStatus = /送样|检验|放行|完成|发货/.test(planRow?.status ?? "");
+
+    route.forEach((routeRow) => {
+      const processRows = present.get(normalizedText(routeRow.process)) ?? [];
+      if (
+        routeRow.required &&
+        !processRows.length &&
+        (maxPresent > routeRow.sequence || downstreamStatus)
+      ) {
+        alerts.push({
+          id: `route-missing-${key}-${routeRow.sequence}`,
+          type: "缺失工序",
+          level: "高",
+          batch: planRow?.batch || batchRows[0]?.batch || key,
+          product,
+          time: `第${routeRow.sequence}道工序`,
+          detail: `标准工艺路线要求“${routeRow.process}”，但已排到后续工序或批次已进入下游状态，当前未找到该工序。`,
+          action: "核对是否漏排、工序名称不一致，或更新产品工艺路线",
+        });
+      }
+    });
+
+    for (let index = 1; index < route.length; index += 1) {
+      const previous = route[index - 1];
+      const current = route[index];
+      const previousRows = present.get(normalizedText(previous.process)) ?? [];
+      const currentRows = present.get(normalizedText(current.process)) ?? [];
+      if (!previousRows.length || !currentRows.length) continue;
+      const previousEnd = Math.max(
+        ...previousRows.map((row) => dateTime(row.end)?.getTime() ?? 0)
+      );
+      const currentStart = Math.min(
+        ...currentRows.map((row) => dateTime(row.start)?.getTime() ?? Infinity)
+      );
+      if (previousEnd > currentStart) {
+        alerts.push({
+          id: `route-order-${key}-${current.sequence}`,
+          type: "工序顺序异常",
+          level: "高",
+          batch: planRow?.batch || batchRows[0]?.batch || key,
+          product,
+          time: `${previous.process} → ${current.process}`,
+          detail: `“${current.process}”开始时，“${previous.process}”尚未结束。`,
+          action: "调整前后工序时间，或确认是否允许重叠并修订路线规则",
+        });
+      }
+    }
+  });
+
+  const productionByDevice = new Map<string, ScheduleRow[]>();
+  schedule
+    .filter((row) => asActivityType(row.activityType) === "生产")
+    .forEach((row) => {
+      const key = `${normalizedText(row.workshop)}|${normalizedText(row.equipment)}`;
+      productionByDevice.set(key, [...(productionByDevice.get(key) ?? []), row]);
+    });
+  productionByDevice.forEach((rows) => {
+    const ordered = [...rows].sort(
+      (a, b) => (dateTime(a.start)?.getTime() ?? 0) - (dateTime(b.start)?.getTime() ?? 0)
+    );
+    ordered.forEach((previous, index) => {
+      const current = ordered[index + 1];
+      if (!current || batchKey(previous.batch) === batchKey(current.batch)) return;
+      const previousEnd = dateTime(previous.end);
+      const currentStart = dateTime(current.start);
+      if (!previousEnd || !currentStart) return;
+      const matchingRules = switchRules.filter((rule) => {
+        const workshopMatches = !rule.workshop || normalizedText(rule.workshop) === normalizedText(current.workshop);
+        const processMatches = !rule.process || normalizedText(rule.process) === normalizedText(current.process);
+        const equipmentMatches = !rule.equipment || normalizedText(rule.equipment) === normalizedText(current.equipment);
+        return workshopMatches && processMatches && equipmentMatches && rule.applicability !== "不适用";
+      });
+      matchingRules.forEach((rule) => {
+        const previousPlan = planByBatch.get(batchKey(previous.batch));
+        const currentPlan = planByBatch.get(batchKey(current.batch));
+        const previousSpec = previous.specification || previousPlan?.specification || "";
+        const currentSpec = current.specification || currentPlan?.specification || "";
+        let triggered: boolean | null = null;
+        if (rule.triggerType === "换产品") {
+          triggered = Boolean(previous.product && current.product) &&
+            normalizedText(previous.product) !== normalizedText(current.product);
+        } else if (rule.triggerType === "换规格") {
+          triggered = previousSpec && currentSpec
+            ? normalizedText(previousSpec) !== normalizedText(currentSpec)
+            : null;
+        } else if (rule.triggerType === "换模具") {
+          triggered = previous.toolingCode && current.toolingCode
+            ? normalizedText(previous.toolingCode) !== normalizedText(current.toolingCode)
+            : null;
+        } else {
+          const knownChanges = [
+            previous.product && current.product
+              ? normalizedText(previous.product) !== normalizedText(current.product)
+              : null,
+            previousSpec && currentSpec
+              ? normalizedText(previousSpec) !== normalizedText(currentSpec)
+              : null,
+            previous.toolingCode && current.toolingCode
+              ? normalizedText(previous.toolingCode) !== normalizedText(current.toolingCode)
+              : null,
+          ];
+          triggered = knownChanges.some(Boolean)
+            ? true
+            : knownChanges.every((item) => item === false)
+              ? false
+              : null;
+        }
+        if (triggered === null) {
+          alerts.push({
+            id: `switch-review-${previous.id}-${current.id}-${rule.id}`,
+            type: "切换条件待人工确认",
+            level: "低",
+            batch: `${previous.batch} → ${current.batch}`,
+            product: `${previous.product} → ${current.product}`,
+            time: `${rule.triggerType} / ${rule.requiredActivity}`,
+            detail: `基础数据不足，无法自动确认本次${rule.triggerType}是否触发“${rule.requiredActivity}”。`,
+            action: "补充规格或模具/规格件编码，或人工确认本次切换",
+          });
+          return;
+        }
+        if (!triggered) return;
+        const activityFound = schedule.some((row) => {
+          const start = dateTime(row.start);
+          const end = dateTime(row.end);
+          return (
+            normalizedText(row.workshop) === normalizedText(current.workshop) &&
+            normalizedText(row.equipment) === normalizedText(current.equipment) &&
+            asActivityType(row.activityType) === rule.requiredActivity &&
+            Boolean(start && end && start >= previousEnd && end <= currentStart)
+          );
+        });
+        if (!activityFound) {
+          alerts.push({
+            id: `switch-activity-missing-${previous.id}-${current.id}-${rule.id}`,
+            type: "切换活动缺失",
+            level: rule.applicability === "必须" ? "高" : "低",
+            batch: `${previous.batch} → ${current.batch}`,
+            product: `${previous.product} → ${current.product}`,
+            time: `${formatDate(previous.end, true)}–${formatDate(current.start, true)}`,
+            detail: `本次${rule.triggerType}按规则${rule.applicability === "必须" ? "必须" : "可能需要"}安排“${rule.requiredActivity}”，但两批之间未找到该活动。`,
+            action: rule.applicability === "必须"
+              ? `补充“${rule.requiredActivity}”时段或核对设备切换规则`
+              : "人工确认是否触发；未触发可标记为合理安排",
+          });
+        }
+      });
+    });
   });
 
   if (standardTimes.length) {
@@ -858,6 +1127,12 @@ function parseScheduleRows(rows: Record<string, unknown>[]) {
         activityType: asActivityType(
           getValue(row, HEADER_ALIASES.schedule.activityType)
         ),
+        specification: String(
+          getValue(row, HEADER_ALIASES.schedule.specification) ?? ""
+        ).trim(),
+        toolingCode: String(
+          getValue(row, HEADER_ALIASES.schedule.toolingCode) ?? ""
+        ).trim(),
         start: asDate(getValue(row, HEADER_ALIASES.schedule.start), true),
         end: asDate(getValue(row, HEADER_ALIASES.schedule.end), true),
         status: String(
@@ -867,6 +1142,55 @@ function parseScheduleRows(rows: Record<string, unknown>[]) {
     });
   });
   return result;
+}
+
+function parseRouteRows(rows: Record<string, unknown>[]) {
+  return rows
+    .map((row) => ({
+      id: uid("route"),
+      product: String(getValue(row, HEADER_ALIASES.routes.product) ?? "").trim(),
+      workshop: String(getValue(row, HEADER_ALIASES.routes.workshop) ?? "").trim(),
+      sequence: Number(getValue(row, HEADER_ALIASES.routes.sequence)),
+      process: String(getValue(row, HEADER_ALIASES.routes.process) ?? "").trim(),
+      required: asRequired(getValue(row, HEADER_ALIASES.routes.required)),
+      note: String(getValue(row, HEADER_ALIASES.routes.note) ?? "").trim(),
+    }))
+    .filter(
+      (row) =>
+        row.product &&
+        row.process &&
+        Number.isFinite(row.sequence) &&
+        row.sequence > 0
+    );
+}
+
+function parseSwitchRuleRows(rows: Record<string, unknown>[]) {
+  return rows
+    .map((row) => ({
+      id: uid("switch"),
+      workshop: String(
+        getValue(row, HEADER_ALIASES.switchRules.workshop) ?? ""
+      ).trim(),
+      process: String(
+        getValue(row, HEADER_ALIASES.switchRules.process) ?? ""
+      ).trim(),
+      equipment: String(
+        getValue(row, HEADER_ALIASES.switchRules.equipment) ?? ""
+      ).trim(),
+      triggerType: asSwitchTrigger(
+        getValue(row, HEADER_ALIASES.switchRules.triggerType)
+      ),
+      requiredActivity: asActivityType(
+        getValue(row, HEADER_ALIASES.switchRules.requiredActivity)
+      ),
+      applicability: asApplicability(
+        getValue(row, HEADER_ALIASES.switchRules.applicability)
+      ),
+      note: String(
+        getValue(row, HEADER_ALIASES.switchRules.note) ?? ""
+      ).trim(),
+    }))
+    .filter((row) => row.workshop && row.process && row.requiredActivity !== "生产");
 }
 
 function parseStandardTimeRows(rows: Record<string, unknown>[]) {
@@ -940,6 +1264,40 @@ function scheduleMergeKey(row: ScheduleRow) {
   return `${scheduleBaseKey(row)}|${normalizedText(row.equipment)}`;
 }
 
+function scheduleScopeKey(row: ScheduleRow) {
+  return [
+    normalizedText(row.workshop),
+    normalizedText(row.equipment),
+    normalizedText(row.process),
+    normalizedText(row.activityType),
+  ].join("|");
+}
+
+function scheduleSlotKey(row: ScheduleRow) {
+  return `${scheduleScopeKey(row)}|${row.start}`;
+}
+
+function isProtectedSchedule(row: ScheduleRow) {
+  return /实际|生产中|已完成|完成|检验中|已检验|放行|发货/.test(row.status);
+}
+
+function sameScheduleRecord(a: ScheduleRow, b: ScheduleRow) {
+  return (
+    normalizedText(a.workshop) === normalizedText(b.workshop) &&
+    normalizedText(a.equipment) === normalizedText(b.equipment) &&
+    normalizedText(a.product) === normalizedText(b.product) &&
+    batchKey(a.batch) === batchKey(b.batch) &&
+    normalizedText(a.process) === normalizedText(b.process) &&
+    normalizedText(a.activityType) === normalizedText(b.activityType) &&
+    normalizedText(a.specification) === normalizedText(b.specification) &&
+    normalizedText(a.toolingCode) === normalizedText(b.toolingCode) &&
+    a.start === b.start &&
+    a.end === b.end &&
+    normalizedText(a.status || "已排产") ===
+      normalizedText(b.status || "已排产")
+  );
+}
+
 function mergePlanRecord(current: PlanRow, incoming: PlanRow): PlanRow {
   return {
     id: current.id,
@@ -966,10 +1324,50 @@ function mergeScheduleRecord(
     batch: incoming.batch || current.batch,
     process: incoming.process || current.process,
     activityType: incoming.activityType || current.activityType || "生产",
+    specification: incoming.specification || current.specification || "",
+    toolingCode: incoming.toolingCode || current.toolingCode || "",
     start: incoming.start || current.start,
     end: incoming.end || current.end,
     status: incoming.status || current.status || "已排产",
   };
+}
+
+function routeMergeKey(row: RouteRow) {
+  return `${normalizedText(row.product)}|${row.sequence}`;
+}
+
+function switchRuleMergeKey(row: SwitchRuleRow) {
+  return [
+    normalizedText(row.workshop),
+    normalizedText(row.process),
+    normalizedText(row.equipment),
+    normalizedText(row.triggerType),
+    normalizedText(row.requiredActivity),
+  ].join("|");
+}
+
+function mergeSimpleRows<T extends { id: string }>(
+  current: T[],
+  incoming: T[],
+  keyFor: (row: T) => string
+): MergeResult<T> {
+  const rows = current.map((row) => ({ ...row }));
+  const index = new Map(rows.map((row, itemIndex) => [keyFor(row), itemIndex]));
+  let added = 0;
+  let updated = 0;
+  incoming.forEach((row) => {
+    const key = keyFor(row);
+    const existingIndex = index.get(key);
+    if (existingIndex === undefined) {
+      rows.push({ ...row });
+      index.set(key, rows.length - 1);
+      added += 1;
+    } else {
+      rows[existingIndex] = { ...row, id: rows[existingIndex].id };
+      updated += 1;
+    }
+  });
+  return { rows, added, updated };
 }
 
 function mergePlanRows(
@@ -999,61 +1397,109 @@ function mergePlanRows(
   return { rows, added, updated };
 }
 
-function mergeScheduleRows(
+export function mergeScheduleRows(
   current: ScheduleRow[],
-  incoming: ScheduleRow[]
-): MergeResult<ScheduleRow> {
+  incoming: ScheduleRow[],
+  mode: ScheduleImportMode = "rangeUpdate"
+): ScheduleMergeResult {
+  if (mode === "append") {
+    const rows = current.map((row) => ({ ...row }));
+    let added = 0;
+    let unchanged = 0;
+    incoming.forEach((row) => {
+      if (rows.some((existing) => sameScheduleRecord(existing, row))) {
+        unchanged += 1;
+      } else {
+        rows.push({ ...row, status: row.status || "已排产" });
+        added += 1;
+      }
+    });
+    return {
+      rows,
+      added,
+      updated: 0,
+      unchanged,
+      cancelled: 0,
+      protected: 0,
+    };
+  }
+
   const rows = current.map((row) => ({ ...row }));
-  const exactIndex = new Map(
-    rows.map((row, index) => [scheduleMergeKey(row), index])
-  );
-  const currentBaseIndexes = new Map<string, number[]>();
-  rows.forEach((row, index) => {
-    const key = scheduleBaseKey(row);
-    currentBaseIndexes.set(key, [
-      ...(currentBaseIndexes.get(key) ?? []),
-      index,
-    ]);
-  });
-  const incomingBaseCounts = new Map<string, number>();
+  const incomingSlots = new Map<string, ScheduleRow>();
+  const coverage = new Map<string, { start: number; end: number }>();
   incoming.forEach((row) => {
-    const key = scheduleBaseKey(row);
-    incomingBaseCounts.set(key, (incomingBaseCounts.get(key) ?? 0) + 1);
+    incomingSlots.set(scheduleSlotKey(row), row);
+    const start = dateTime(row.start)?.getTime();
+    const end = dateTime(row.end)?.getTime();
+    if (start === undefined || end === undefined) return;
+    const key = scheduleScopeKey(row);
+    const currentRange = coverage.get(key);
+    coverage.set(key, {
+      start: Math.min(currentRange?.start ?? start, start),
+      end: Math.max(currentRange?.end ?? end, end),
+    });
   });
 
   let added = 0;
   let updated = 0;
-  incoming.forEach((row) => {
-    const exactKey = scheduleMergeKey(row);
-    const baseKey = scheduleBaseKey(row);
-    let existingIndex = exactIndex.get(exactKey);
+  let unchanged = 0;
+  let cancelled = 0;
+  let protectedCount = 0;
+  const consumedSlots = new Set<string>();
 
-    if (
-      existingIndex === undefined &&
-      incomingBaseCounts.get(baseKey) === 1 &&
-      currentBaseIndexes.get(baseKey)?.length === 1
-    ) {
-      existingIndex = currentBaseIndexes.get(baseKey)?.[0];
+  rows.forEach((row, index) => {
+    const scope = coverage.get(scheduleScopeKey(row));
+    const start = dateTime(row.start)?.getTime();
+    const end = dateTime(row.end)?.getTime();
+    const inCoverage = Boolean(
+      scope &&
+        start !== undefined &&
+        end !== undefined &&
+        start < scope.end &&
+        end > scope.start
+    );
+    if (!inCoverage) return;
+
+    const slotKey = scheduleSlotKey(row);
+    const replacement = incomingSlots.get(slotKey);
+    if (replacement) {
+      consumedSlots.add(slotKey);
+      if (isProtectedSchedule(row)) {
+        protectedCount += 1;
+      } else if (sameScheduleRecord(row, replacement)) {
+        unchanged += 1;
+      } else {
+        rows[index] = {
+          ...replacement,
+          id: row.id,
+          status: replacement.status || "已排产",
+        };
+        updated += 1;
+      }
+    } else if (isProtectedSchedule(row)) {
+      protectedCount += 1;
+    } else if (!/取消|移出排产/.test(row.status)) {
+      rows[index] = { ...row, status: "已取消" };
+      cancelled += 1;
     }
-
-    if (existingIndex === undefined) {
-      rows.push({ ...row, status: row.status || "已排产" });
-      const newIndex = rows.length - 1;
-      exactIndex.set(exactKey, newIndex);
-      currentBaseIndexes.set(baseKey, [
-        ...(currentBaseIndexes.get(baseKey) ?? []),
-        newIndex,
-      ]);
-      added += 1;
-      return;
-    }
-
-    rows[existingIndex] = mergeScheduleRecord(rows[existingIndex], row);
-    exactIndex.set(scheduleMergeKey(rows[existingIndex]), existingIndex);
-    updated += 1;
   });
 
-  return { rows, added, updated };
+  incoming.forEach((row) => {
+    const slotKey = scheduleSlotKey(row);
+    if (consumedSlots.has(slotKey)) return;
+    rows.push({ ...row, status: row.status || "已排产" });
+    consumedSlots.add(slotKey);
+    added += 1;
+  });
+
+  return {
+    rows,
+    added,
+    updated,
+    unchanged,
+    cancelled,
+    protected: protectedCount,
+  };
 }
 
 function standardTimeMergeKey(row: StandardTimeRow) {
@@ -1108,18 +1554,25 @@ export default function Home() {
   const [schedule, setSchedule] = useState<ScheduleRow[]>(DEMO_SCHEDULE);
   const [standardTimes, setStandardTimes] =
     useState<StandardTimeRow[]>(DEMO_STANDARD_TIMES);
+  const [routes, setRoutes] = useState<RouteRow[]>(DEMO_ROUTES);
+  const [switchRules, setSwitchRules] =
+    useState<SwitchRuleRow[]>(DEMO_SWITCH_RULES);
   const [rules, setRules] = useState<Rules>(DEFAULT_RULES);
   const [importState, setImportState] = useState<ImportState>({
     plan: false,
     schedule: false,
     standardTime: false,
+    routes: false,
+    switchRules: false,
   });
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
   const [level, setLevel] = useState<"全部" | AlertLevel>("全部");
   const [alertType, setAlertType] = useState("全部类型");
+  const [scheduleImportMode, setScheduleImportMode] =
+    useState<ScheduleImportMode>("rangeUpdate");
   const [notice, setNotice] = useState(
-    "首次上传会替换对应示例数据；后续上传将保留历史记录并自动合并重复信息"
+    "默认按上传文件覆盖的车间、设备、工序和时间范围更新；范围外排产保持不变"
   );
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -1135,6 +1588,8 @@ export default function Home() {
               data.schedule.map((row: ScheduleRow) => ({
                 ...row,
                 activityType: asActivityType(row.activityType),
+                specification: row.specification ?? "",
+                toolingCode: row.toolingCode ?? "",
               }))
             );
           }
@@ -1149,6 +1604,8 @@ export default function Home() {
                 }))
               : []
           );
+          setRoutes(Array.isArray(data.routes) ? data.routes : []);
+          setSwitchRules(Array.isArray(data.switchRules) ? data.switchRules : []);
           setImportState({
             plan:
               data.importState?.plan ??
@@ -1162,6 +1619,12 @@ export default function Home() {
               data.importState?.standardTime ??
               (Array.isArray(data.standardTimes) &&
                 data.standardTimes.length > 0),
+            routes:
+              data.importState?.routes ??
+              (Array.isArray(data.routes) && data.routes.length > 0),
+            switchRules:
+              data.importState?.switchRules ??
+              (Array.isArray(data.switchRules) && data.switchRules.length > 0),
           });
           if (data.rules) {
             const savedRules = data.rules as Partial<Rules> & {
@@ -1198,13 +1661,30 @@ export default function Home() {
     if (!loaded) return;
     localStorage.setItem(
       "aps-mini-data",
-      JSON.stringify({ plan, schedule, standardTimes, rules, importState })
+      JSON.stringify({
+        plan,
+        schedule,
+        standardTimes,
+        routes,
+        switchRules,
+        rules,
+        importState,
+      })
     );
-  }, [loaded, plan, schedule, standardTimes, rules, importState]);
+  }, [
+    loaded,
+    plan,
+    schedule,
+    standardTimes,
+    routes,
+    switchRules,
+    rules,
+    importState,
+  ]);
 
   const alerts = useMemo(
-    () => evaluate(plan, schedule, rules, standardTimes),
-    [plan, schedule, rules, standardTimes]
+    () => evaluate(plan, schedule, rules, standardTimes, routes, switchRules),
+    [plan, schedule, rules, standardTimes, routes, switchRules]
   );
   const alertTypes = useMemo(
     () =>
@@ -1260,6 +1740,16 @@ export default function Home() {
             (name) => name.includes("标准") && name.includes("工时")
           ) ?? ""
         ];
+      const routeSheet =
+        workbook.Sheets["产品工艺路线"] ??
+        workbook.Sheets[
+          workbook.SheetNames.find((name) => name.includes("工艺路线")) ?? ""
+        ];
+      const switchRuleSheet =
+        workbook.Sheets["设备切换规则"] ??
+        workbook.Sheets[
+          workbook.SheetNames.find((name) => name.includes("切换规则")) ?? ""
+        ];
       const nextPlan = planSheet
         ? parsePlanRows(
             XLSX.utils.sheet_to_json<Record<string, unknown>>(planSheet, { defval: "" }),
@@ -1281,13 +1771,29 @@ export default function Home() {
             )
           )
         : [];
+      const nextRoutes = routeSheet
+        ? parseRouteRows(
+            XLSX.utils.sheet_to_json<Record<string, unknown>>(routeSheet, {
+              defval: "",
+            })
+          )
+        : [];
+      const nextSwitchRules = switchRuleSheet
+        ? parseSwitchRuleRows(
+            XLSX.utils.sheet_to_json<Record<string, unknown>>(switchRuleSheet, {
+              defval: "",
+            })
+          )
+        : [];
       if (
         !nextPlan.length &&
         !nextSchedule.length &&
-        !nextStandardTimes.length
+        !nextStandardTimes.length &&
+        !nextRoutes.length &&
+        !nextSwitchRules.length
       ) {
         setNotice(
-          "未识别到“生产计划”“排产明细”或“标准活动工时”工作表，请先下载模板"
+          "未识别到有效工作表，请先下载最新版导入模板"
         );
         return;
       }
@@ -1315,10 +1821,15 @@ export default function Home() {
 
       if (nextSchedule.length) {
         if (importState.schedule) {
-          const merged = mergeScheduleRows(schedule, nextSchedule);
+          const merged = mergeScheduleRows(
+            schedule,
+            nextSchedule,
+            scheduleImportMode
+          );
           setSchedule(merged.rows);
-          messages.push(
-            `排产记录新增${merged.added}条、合并更新${merged.updated}条`
+          messages.push(scheduleImportMode === "rangeUpdate"
+            ? `排产范围更新：不变${merged.unchanged}条、替换${merged.updated}条、新增${merged.added}条、取消${merged.cancelled}条${merged.protected ? `、保护实际/人工状态${merged.protected}条` : ""}`
+            : `排产仅追加：新增${merged.added}条、重复保留${merged.unchanged}条`
           );
         } else {
           setSchedule(
@@ -1347,6 +1858,34 @@ export default function Home() {
           messages.push(`标准活动工时首次导入${nextStandardTimes.length}条`);
         }
         nextImportState.standardTime = true;
+      }
+
+      if (nextRoutes.length) {
+        if (importState.routes) {
+          const merged = mergeSimpleRows(routes, nextRoutes, routeMergeKey);
+          setRoutes(merged.rows);
+          messages.push(`产品工艺路线新增${merged.added}条、更新${merged.updated}条`);
+        } else {
+          setRoutes(nextRoutes);
+          messages.push(`产品工艺路线首次导入${nextRoutes.length}条`);
+        }
+        nextImportState.routes = true;
+      }
+
+      if (nextSwitchRules.length) {
+        if (importState.switchRules) {
+          const merged = mergeSimpleRows(
+            switchRules,
+            nextSwitchRules,
+            switchRuleMergeKey
+          );
+          setSwitchRules(merged.rows);
+          messages.push(`设备切换规则新增${merged.added}条、更新${merged.updated}条`);
+        } else {
+          setSwitchRules(nextSwitchRules);
+          messages.push(`设备切换规则首次导入${nextSwitchRules.length}条`);
+        }
+        nextImportState.switchRules = true;
       }
 
       setImportState(nextImportState);
@@ -1387,6 +1926,8 @@ export default function Home() {
           批号: row.batch,
           工序: row.process,
           活动类型: row.activityType,
+          规格: row.specification,
+          "模具/规格件编码": row.toolingCode,
           开始时间: row.start,
           结束时间: row.end,
           状态: row.status,
@@ -1411,6 +1952,35 @@ export default function Home() {
         }))
       ),
       "标准活动工时"
+    );
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(
+        DEMO_ROUTES.map((row) => ({
+          产品名称: row.product,
+          车间: row.workshop,
+          工序序号: row.sequence,
+          工序: row.process,
+          是否必需: row.required ? "是" : "否",
+          备注: row.note,
+        }))
+      ),
+      "产品工艺路线"
+    );
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(
+        DEMO_SWITCH_RULES.map((row) => ({
+          车间: row.workshop,
+          工序: row.process,
+          设备: row.equipment,
+          触发类型: row.triggerType,
+          必需活动: row.requiredActivity,
+          适用规则: row.applicability,
+          备注: row.note,
+        }))
+      ),
+      "设备切换规则"
     );
     XLSX.writeFile(workbook, "APS-mini导入模板.xlsx");
   }
@@ -1439,8 +2009,16 @@ export default function Home() {
     setPlan(DEMO_PLAN);
     setSchedule(DEMO_SCHEDULE);
     setStandardTimes(DEMO_STANDARD_TIMES);
+    setRoutes(DEMO_ROUTES);
+    setSwitchRules(DEMO_SWITCH_RULES);
     setRules(DEFAULT_RULES);
-    setImportState({ plan: false, schedule: false, standardTime: false });
+    setImportState({
+      plan: false,
+      schedule: false,
+      standardTime: false,
+      routes: false,
+      switchRules: false,
+    });
     setNotice("已恢复示例数据");
   }
 
@@ -1480,6 +2058,8 @@ export default function Home() {
     schedule: schedule.length,
     plan: plan.length,
     standardTime: standardTimes.length,
+    routes: routes.length,
+    switchRules: switchRules.length,
   };
 
   return (
@@ -1535,8 +2115,20 @@ export default function Home() {
             <button className="button secondary" onClick={downloadTemplate}>
               下载导入模板
             </button>
+            <label className="import-mode">
+              <span>排产导入方式</span>
+              <select
+                value={scheduleImportMode}
+                onChange={(event) =>
+                  setScheduleImportMode(event.target.value as ScheduleImportMode)
+                }
+              >
+                <option value="rangeUpdate">更新文件覆盖范围</option>
+                <option value="append">仅追加新排产</option>
+              </select>
+            </label>
             <button className="button primary" onClick={() => fileRef.current?.click()}>
-              上传 Excel 并合并审核
+              上传 Excel 并审核
             </button>
           </div>
         </header>
@@ -1637,6 +2229,14 @@ export default function Home() {
                   <div>
                     <dt>标准活动工时</dt>
                     <dd>{standardTimes.length} 条活动基准</dd>
+                  </div>
+                  <div>
+                    <dt>工艺路线</dt>
+                    <dd>{routes.length} 条工序规则</dd>
+                  </div>
+                  <div>
+                    <dt>设备切换</dt>
+                    <dd>{switchRules.length} 条切换规则</dd>
                   </div>
                 </dl>
               </article>
@@ -1757,7 +2357,8 @@ export default function Home() {
               <table>
                 <thead>
                   <tr>
-                    <th>车间</th><th>设备</th><th>产品</th><th>批号</th>
+                    <th>车间</th><th>设备</th><th>产品</th><th>规格</th><th>批号</th>
+                    <th>模具/规格件</th>
                     <th>工序</th><th>活动类型</th><th>开始时间</th><th>结束时间</th><th>状态</th><th />
                   </tr>
                 </thead>
@@ -1765,7 +2366,8 @@ export default function Home() {
                   {schedule.map((row) => (
                     <tr key={row.id}>
                       <td>{row.workshop}</td><td>{row.equipment}</td><td>{row.product}</td>
-                      <td><b>{row.batch}</b></td><td>{row.process}</td>
+                      <td>{row.specification || "—"}</td>
+                      <td><b>{row.batch}</b></td><td>{row.toolingCode || "—"}</td><td>{row.process}</td>
                       <td><span className={`activity-tag activity-${row.activityType}`}>{row.activityType}</span></td>
                       <td>{formatDate(row.start, true)}</td><td>{formatDate(row.end, true)}</td>
                       <td><span className="tag">{row.status}</span></td>
@@ -1896,6 +2498,81 @@ export default function Home() {
           </section>
         )}
 
+        {tab === "routes" && (
+          <section className="panel table-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">产品 · 车间 · 工序顺序</p>
+                <h2>产品工艺路线</h2>
+              </div>
+              <span className="helper">仅在已跳过必需工序或批次进入下游状态时判断缺失</span>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>产品</th><th>车间</th><th>序号</th><th>工序</th>
+                    <th>是否必需</th><th>备注</th><th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {routes
+                    .slice()
+                    .sort((a, b) => normalizedText(a.product).localeCompare(normalizedText(b.product)) || a.sequence - b.sequence)
+                    .map((row) => (
+                      <tr key={row.id}>
+                        <td><b>{row.product}</b></td>
+                        <td>{row.workshop || "—"}</td>
+                        <td>{row.sequence}</td>
+                        <td>{row.process}</td>
+                        <td><span className="tag">{row.required ? "必需" : "可选"}</span></td>
+                        <td>{row.note || "—"}</td>
+                        <td><button className="delete-button" onClick={() => setRoutes(routes.filter((item) => item.id !== row.id))}>删除</button></td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+              {!routes.length && <div className="empty-state table-empty"><b>尚未导入产品工艺路线</b><span>下载模板后在“产品工艺路线”sheet中维护</span></div>}
+            </div>
+          </section>
+        )}
+
+        {tab === "switchRules" && (
+          <section className="panel table-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">前后批次 · 触发条件 · 必需活动</p>
+                <h2>设备切换规则</h2>
+              </div>
+              <span className="helper">信息不足时进入人工确认，不强制判错</span>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>车间</th><th>工序</th><th>设备</th><th>触发类型</th>
+                    <th>必需活动</th><th>适用规则</th><th>备注</th><th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {switchRules.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.workshop}</td><td>{row.process}</td>
+                      <td>{row.equipment || "不限设备"}</td>
+                      <td><b>{row.triggerType}</b></td>
+                      <td><span className={`activity-tag activity-${row.requiredActivity}`}>{row.requiredActivity}</span></td>
+                      <td><span className={`applicability applicability-${row.applicability}`}>{row.applicability}</span></td>
+                      <td>{row.note || "—"}</td>
+                      <td><button className="delete-button" onClick={() => setSwitchRules(switchRules.filter((item) => item.id !== row.id))}>删除</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!switchRules.length && <div className="empty-state table-empty"><b>尚未导入设备切换规则</b><span>下载模板后在“设备切换规则”sheet中维护</span></div>}
+            </div>
+          </section>
+        )}
+
         {tab === "rules" && (
           <div className="rules-layout">
             <section className="panel rules-panel">
@@ -1996,6 +2673,10 @@ export default function Home() {
                 <li><b>清场间隔：</b>优先按工序匹配专用值；未配置工序使用默认值。</li>
                 <li><b>活动工时：</b>按产品、车间、工序、设备和活动类型匹配；同类分段时段先合计。</li>
                 <li><b>适用规则：</b>“必须”缺失会提示异常；“条件适用”缺失进入待人工确认；“不适用”不会误判缺失。</li>
+                <li><b>工艺路线：</b>只有已排到后续却跳过必需工序，或批次已进入送样、检验等下游状态时，才判断缺失。</li>
+                <li><b>设备切换：</b>按前后批次的产品、规格和模具编码判断；信息不足时进入人工确认。</li>
+                <li><b>排产更新：</b>按车间、设备、工序、活动类型及上传时间范围比较；一致记录保留，变化记录替换，新增记录加入，旧版缺失记录标记为已取消。</li>
+                <li><b>更新边界：</b>上传范围外的数据不变；实际生产、生产中、已完成、检验、放行或发货记录不会被排产文件覆盖。</li>
                 <li><b>交期依据：</b>优先使用生产检验跟踪表中的许可发货日期。</li>
                 <li><b>新增数据：</b>上传或删除记录后，全部异常立即重新计算。</li>
               </ul>
